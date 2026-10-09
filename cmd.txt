@@ -1,0 +1,19 @@
+# ==========================================
+# IoT Hub - Run & Test Commands Cheatsheet
+# ==========================================
+
+# 1. Activate Virtual Environment
+source .venv/bin/activate
+
+# 2. Run All Automated Unit Tests (Pydantic, Router, Devices, RabbitMQ)
+python -m pytest -v
+
+# 3. Start the IoT Hub Prototype (Terminal 1)
+python -m main
+# Note: Press Ctrl+C to stop the hub gracefully
+
+# 4. Send Test Commands to Mock Devices (Terminal 2)
+python tests/publish_test.py
+
+# 5. Run Full Acceptance Test Suite (Terminal 2)
+python tests/acceptance_test.py
