@@ -1,0 +1,33 @@
+[Unit]
+Description=RnR Linux IoT Hub Daemon Service
+After=network.target time-sync.target
+Wants=time-sync.target
+
+[Service]
+Type=notify
+WatchdogSec=30s
+NotifyAccess=all
+User=rnr_hub
+WorkingDirectory=/home/rnr_hub/Documents/iot_hub/RnR_iot_hub
+ExecStart=/home/rnr_hub/Documents/iot_hub/RnR_iot_hub/.venv/bin/python -m main
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+# Environment variables
+EnvironmentFile=-/home/rnr_hub/Documents/iot_hub/RnR_iot_hub/.env
+PYTHONUNBUFFERED=1
+
+# Hardening / Sandboxing
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/rnr_hub/Documents/iot_hub/RnR_iot_hub
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=iothub
+
+[Install]
+WantedBy=multi-user.target

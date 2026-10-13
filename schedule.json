@@ -1,0 +1,502 @@
+{
+    "success": true,
+    "schedule_id": "hub-01-2026-10-12",
+    "hub_id": "hub-01",
+    "revision": 1,
+    "date": "2026-10-12",
+    "timezone": "Asia/Kolkata",
+    "now": "16:26",
+    "count": 2,
+    "schedules": [
+        {
+            "production_order": {
+                "id": 174513,
+                "production_order_number": "910be4c5-6db6-4d46-b20f-69e29737eb2e",
+                "production_order_type": "PO",
+                "master_production_order": "PO-00001",
+                "task": "Crop Optimization",
+                "quantity": 1000.0,
+                "status": "TO DO",
+                "company_id": 2,
+                "product": {
+                    "id": 15,
+                    "name": "Plants"
+                },
+                "start_date": "2026-10-05",
+                "end_date": "2026-12-16"
+            },
+            "resource": {
+                "id": 20020,
+                "name": "Plants Hub ",
+                "type": "Machine",
+                "resource_group": "6575fd"
+            },
+            "production_list": [
+                {
+                    "id": 37,
+                    "name": "Plants",
+                    "current_stage": "8",
+                    "previous_stage": "7",
+                    "time": "16:28",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_ON",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 30,
+                    "name": "Plants",
+                    "current_stage": "1",
+                    "previous_stage": "0",
+                    "time": "16:29",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_OFF",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 31,
+                    "name": "Plants",
+                    "current_stage": "2",
+                    "previous_stage": "1",
+                    "time": "16:30",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_ON",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 32,
+                    "name": "Plants",
+                    "current_stage": "3",
+                    "previous_stage": "2",
+                    "time": "16:31",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_OFF",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 33,
+                    "name": "Plants",
+                    "current_stage": "4",
+                    "previous_stage": "3",
+                    "time": "16:32",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_ON",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 34,
+                    "name": "Plants",
+                    "current_stage": "5",
+                    "previous_stage": "4",
+                    "time": "16:33",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_OFF",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 35,
+                    "name": "Plants",
+                    "current_stage": "6",
+                    "previous_stage": "5",
+                    "time": "16:34",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_ON",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 36,
+                    "name": "Plants",
+                    "current_stage": "7",
+                    "previous_stage": "6",
+                    "time": "11:47",
+                    "sub_resource_actions": []
+                },
+                {
+                    "id": 38,
+                    "name": "Plants",
+                    "current_stage": "9",
+                    "previous_stage": "8",
+                    "time": "16:35",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_OFF",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 39,
+                    "name": "Plants",
+                    "current_stage": "9",
+                    "previous_stage": "8",
+                    "time": "16:36",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_ON",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 40,
+                    "name": "Plants",
+                    "current_stage": "10",
+                    "previous_stage": "9",
+                    "time": "16:37",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_OFF",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 41,
+                    "name": "Plants",
+                    "current_stage": "11",
+                    "previous_stage": "10",
+                    "time": "16:38",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_ON",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 42,
+                    "name": "Plants",
+                    "current_stage": "12",
+                    "previous_stage": "11",
+                    "time": "16:39",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_OFF",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 43,
+                    "name": "Plants",
+                    "current_stage": "12",
+                    "previous_stage": "11",
+                    "time": "16:40",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_ON",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 44,
+                    "name": "Plants",
+                    "current_stage": "13",
+                    "previous_stage": "12",
+                    "time": "16:41",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_OFF",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 45,
+                    "name": "Plants",
+                    "current_stage": "14",
+                    "previous_stage": "13",
+                    "time": "16:42",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_ON",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                },
+                {
+                    "id": 46,
+                    "name": "Plants",
+                    "current_stage": "15",
+                    "previous_stage": "14",
+                    "time": "16:43",
+                    "sub_resource_actions": [
+                        {
+                            "action": "LIGHTS_OFF",
+                            "params": {},
+                            "channel_key": "relay:light",
+                            "sub_resource": 20023
+                        }
+                    ]
+                }
+            ],
+            "sub_resources": [
+                {
+                    "id": 20023,
+                    "name": "Plants Hub ",
+                    "type": "IOT",
+                    "availability": true,
+                    "iot_node_id": "/dev/ttyUSB0",
+                    "sensor_type": "",
+                    "kit_type": "RnField+",
+                    "enabled_channels": [
+                        "soil_moisture",
+                        "dht11.temperature",
+                        "dht11.humidity",
+                        "ph_mock",
+                        "rainfall_mm_mock",
+                        "crop_stage_mock",
+                        "relay:light"
+                    ],
+                    "parameters": [],
+                    "schedule": {
+                        "start_date": "2026-10-05",
+                        "end_date": "2026-12-16"
+                    },
+                    "actions": [
+                        {
+                            "time": "16:28",
+                            "stage_id": 37,
+                            "stage": "8",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_ON",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:29",
+                            "stage_id": 30,
+                            "stage": "1",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_OFF",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:30",
+                            "stage_id": 31,
+                            "stage": "2",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_ON",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:31",
+                            "stage_id": 32,
+                            "stage": "3",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_OFF",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:32",
+                            "stage_id": 33,
+                            "stage": "4",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_ON",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:33",
+                            "stage_id": 34,
+                            "stage": "5",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_OFF",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:34",
+                            "stage_id": 35,
+                            "stage": "6",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_ON",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:35",
+                            "stage_id": 38,
+                            "stage": "9",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_OFF",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:36",
+                            "stage_id": 39,
+                            "stage": "9",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_ON",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:37",
+                            "stage_id": 40,
+                            "stage": "10",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_OFF",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:38",
+                            "stage_id": 41,
+                            "stage": "11",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_ON",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:39",
+                            "stage_id": 42,
+                            "stage": "12",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_OFF",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:40",
+                            "stage_id": 43,
+                            "stage": "12",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_ON",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:41",
+                            "stage_id": 44,
+                            "stage": "13",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_OFF",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:42",
+                            "stage_id": 45,
+                            "stage": "14",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_ON",
+                            "params": {}
+                        },
+                        {
+                            "time": "16:43",
+                            "stage_id": 46,
+                            "stage": "15",
+                            "channel_key": "relay:light",
+                            "action": "LIGHTS_OFF",
+                            "params": {}
+                        }
+                    ]
+                }
+            ],
+            "dispatch": {
+                "sent": false,
+                "device_id": "/dev/ttyUSB0",
+                "reason": "Internal error while sending schedule."
+            }
+        },
+        {
+            "production_order": {
+                "id": 174514,
+                "production_order_number": "d5da2635-e84c-450c-b6d5-d4acb8594881",
+                "production_order_type": "JOB",
+                "master_production_order": "PO-00001",
+                "task": "Crop Optimization",
+                "quantity": 1.0,
+                "status": "TO DO",
+                "company_id": 2,
+                "product": {
+                    "id": 15,
+                    "name": "Plants"
+                },
+                "start_date": "2026-10-06",
+                "end_date": "2026-12-16"
+            },
+            "resource": {
+                "id": 20020,
+                "name": "Plants Hub ",
+                "type": "Machine",
+                "resource_group": "6575fd"
+            },
+            "production_list": [],
+            "sub_resources": [
+                {
+                    "id": 20023,
+                    "name": "Plants Hub ",
+                    "type": "IOT",
+                    "availability": true,
+                    "iot_node_id": "/dev/ttyUSB0",
+                    "sensor_type": "",
+                    "kit_type": "RnField+",
+                    "enabled_channels": [
+                        "soil_moisture",
+                        "dht11.temperature",
+                        "dht11.humidity",
+                        "ph_mock",
+                        "rainfall_mm_mock",
+                        "crop_stage_mock",
+                        "relay:light"
+                    ],
+                    "parameters": [],
+                    "schedule": {
+                        "start_date": "2026-10-06",
+                        "end_date": "2026-12-16"
+                    },
+                    "actions": []
+                }
+            ],
+            "dispatch": {
+                "sent": false,
+                "device_id": "/dev/ttyUSB0",
+                "reason": "No scheduled actions for this sub-resource."
+            }
+        }
+    ]
+}

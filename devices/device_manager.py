@@ -14,17 +14,23 @@ class DeviceManager:
     """Manages registered devices and dispatches incoming actions."""
 
     def __init__(self):
-        self._devices: Dict[str, MockDevice] = {}
+        self._devices: Dict[str, Any] = {}
+        self._aliases: Dict[str, str] = {}
 
-    def register_device(self, device: MockDevice) -> None:
+    def register_device(self, device: Any) -> None:
         self._devices[device.device_id] = device
-        logger.info("Registered device '%s' (%s)", device.device_id, device.name)
+        logger.info("Registered device '%s' (%s)", device.device_id, getattr(device, "name", "device"))
 
-    def get_device(self, device_id: str) -> Optional[MockDevice]:
-        return self._devices.get(device_id)
+    def register_alias(self, alias: str, target_device_id: str) -> None:
+        self._aliases[alias] = target_device_id
+        logger.info("Registered device alias '%s' -> '%s'", alias, target_device_id)
+
+    def get_device(self, device_id: str) -> Optional[Any]:
+        target_id = self._aliases.get(device_id, device_id)
+        return self._devices.get(target_id)
 
     def list_devices(self) -> List[str]:
-        return list(self._devices.keys())
+        return list(self._devices.keys()) + list(self._aliases.keys())
 
     async def dispatch(self, device_id: str, action: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -40,10 +46,31 @@ class DeviceManager:
 
         return await device.execute_command(action, parameters)
 
+    def close_all(self) -> None:
+        """Closes all open devices, serial connections, and workers."""
+        for dev_id, device in self._devices.items():
+            if hasattr(device, "close") and callable(device.close):
+                try:
+                    device.close()
+                    logger.info("Closed device connection for '%s'", dev_id)
+                except Exception as exc:
+                    logger.warning("Error closing device '%s': %s", dev_id, exc)
+
 
 def create_default_device_manager() -> DeviceManager:
-    """Factory creating DeviceManager pre-populated with standard mock devices."""
+    """Factory creating DeviceManager pre-populated with standard devices and physical Arduino Nano."""
     manager = DeviceManager()
     manager.register_device(MockLedActuator("iot_001"))
     manager.register_device(MockTemperatureSensor("iot_002"))
+
+    # Register physical Arduino Nano on /dev/ttyUSB0
+    try:
+        from devices.arduino_nano import ArduinoNanoDevice
+        nano = ArduinoNanoDevice(port="/dev/ttyUSB0", device_id="/dev/ttyUSB0")
+        manager.register_device(nano)
+        manager.register_alias("98a316e6b658", "/dev/ttyUSB0")
+        manager.register_alias("ttyUSB0", "/dev/ttyUSB0")
+    except Exception as exc:
+        logger.warning("Could not register Arduino Nano: %s", exc)
+
     return manager

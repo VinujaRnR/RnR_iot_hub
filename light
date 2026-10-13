@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""
+RnR Linux IoT Hub - Dedicated Light Controller CLI
+File: light
+
+Usage:
+    ./light on      (Turns built-in LED ON)
+    ./light off     (Turns built-in LED OFF)
+    ./light status  (Queries current LED status)
+    ./light toggle  (Toggles LED between ON and OFF)
+
+Guarantees:
+    - Waits for ATmega328P bootloader settling delay so zero commands are ever dropped.
+    - Solid ON state until OFF is commanded.
+    - Solid OFF state until ON is commanded.
+"""
+
+import os
+import sys
+import time
+
+# Styling
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+CYAN = "\033[96m"
+RED = "\033[91m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+PORT = "/dev/ttyUSB0"
+BAUD = 9600
+
+
+def get_serial_connection():
+    if not os.path.exists(PORT):
+        print(f"{RED}[ERROR] Serial port '{PORT}' not found.{RESET}")
+        print("Ensure your Arduino Nano is plugged into a USB port.")
+        sys.exit(1)
+
+    try:
+        import serial
+    except ImportError:
+        # Fallback to virtual environment python
+        venv_py = os.path.join(os.path.dirname(__file__), ".venv", "bin", "python")
+        if os.path.exists(venv_py) and sys.executable != venv_py:
+            os.execv(venv_py, [venv_py] + sys.argv)
+        else:
+            print(f"{RED}[ERROR] pyserial is not installed. Run: pip install pyserial{RESET}")
+            sys.exit(1)
+
+    try:
+        ser = serial.Serial(
+            port=PORT,
+            baudrate=BAUD,
+            timeout=1.5,
+            write_timeout=2.0,
+        )
+    except Exception as exc:
+        print(f"{RED}[ERROR] Could not open port '{PORT}': {exc}{RESET}")
+        print("Hint: Check if another application (like a monitor or scheduler) is holding the port.")
+        sys.exit(1)
+
+    # Allow Arduino Nano bootloader to settle (1.8s) so the command is never dropped
+    time.sleep(1.8)
+    return ser
+
+
+def send_command(ser, cmd_char: str) -> str:
+    ser.reset_input_buffer()
+    ser.write(cmd_char.encode("ascii"))
+    ser.flush()
+    # Read response line
+    time.sleep(0.1)
+    line = ser.readline().decode("utf-8", errors="ignore").strip()
+    return line
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(f"{BOLD}RnR Light Controller CLI{RESET}")
+        print(f"Usage: {BOLD}./light <on | off | status | toggle | blink>{RESET}\n")
+        print("Commands:")
+        print("  ./light on      -> Turns Built-in LED (Pin 13) SOLID ON")
+        print("  ./light off     -> Turns Built-in LED (Pin 13) SOLID OFF")
+        print("  ./light status  -> Prints current LED state")
+        print("  ./light toggle  -> Toggles between ON and OFF")
+        print("  ./light blink   -> Visually flashes 5 times (0.5s ON, 0.5s OFF)")
+        sys.exit(0)
+
+    arg = sys.argv[1].strip().lower()
+
+    if arg in ("on", "1", "high"):
+        ser = get_serial_connection()
+        try:
+            resp = send_command(ser, "1")
+            print(f"{BOLD}{GREEN}💡 [SUCCESS] Physical Light (Pin 13) is now SOLID ON!{RESET}")
+            print(f"   (Device Response: {resp or 'OK'})")
+            print(f"   The light will remain ON continuously until you run './light off'.")
+        finally:
+            ser.close()
+
+    elif arg in ("off", "0", "low"):
+        ser = get_serial_connection()
+        try:
+            resp = send_command(ser, "0")
+            print(f"{BOLD}{YELLOW}🌑 [SUCCESS] Physical Light (Pin 13) is now SOLID OFF!{RESET}")
+            print(f"   (Device Response: {resp or 'OK'})")
+            print(f"   The light will remain OFF continuously until you run './light on'.")
+        finally:
+            ser.close()
+
+    elif arg in ("status", "?", "state"):
+        ser = get_serial_connection()
+        try:
+            resp = send_command(ser, "?")
+            if "ON" in resp.upper():
+                print(f"Status: {BOLD}{GREEN}💡 LIGHT IS ON{RESET}")
+            elif "OFF" in resp.upper():
+                print(f"Status: {BOLD}{YELLOW}🌑 LIGHT IS OFF{RESET}")
+            else:
+                print(f"Status: {resp or 'Unknown'}")
+        finally:
+            ser.close()
+
+    elif arg in ("toggle", "t"):
+        ser = get_serial_connection()
+        try:
+            status_resp = send_command(ser, "?")
+            if "ON" in status_resp.upper():
+                send_command(ser, "0")
+                print(f"{BOLD}{YELLOW}🌑 Toggled: Light is now SOLID OFF!{RESET}")
+            else:
+                send_command(ser, "1")
+                print(f"{BOLD}{GREEN}💡 Toggled: Light is now SOLID ON!{RESET}")
+        finally:
+            ser.close()
+
+    elif arg in ("blink", "b"):
+        ser = get_serial_connection()
+        try:
+            resp = send_command(ser, "B")
+            print(f"{BOLD}{CYAN}⚡ [BLINKING] Arduino Nano is blinking all pins 5 times...{RESET}")
+            # Wait for blink to finish (5 * 1000ms = 5s)
+            time.sleep(5.2)
+            finish_resp = ser.readline().decode("utf-8", errors="ignore").strip()
+            print(f"{BOLD}{GREEN}✨ [COMPLETE] Blink test finished! (Response: {finish_resp or 'OK'}){RESET}")
+        finally:
+            ser.close()
+
+    else:
+        print(f"{RED}[ERROR] Unknown command '{arg}'. Use 'on', 'off', 'status', 'toggle', or 'blink'.{RESET}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -56,9 +56,21 @@ class MockLedActuator(MockDevice):
         super().__init__(
             device_id=device_id,
             name="Smart LED Actuator",
-            supported_actions=["set_led", "get_status", "toggle"],
+            supported_actions=["set_led", "get_status", "toggle", "LIGHTS_ON", "LIGHTS_OFF", "lights_on", "lights_off"],
         )
         self._state["led"] = "off"
+
+    @property
+    def led_state(self) -> str:
+        return self._state.get("led", "off").upper()
+
+    async def _handle_LIGHTS_ON(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        self._state["led"] = "on"
+        return {"led_state": "ON"}
+
+    async def _handle_LIGHTS_OFF(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        self._state["led"] = "off"
+        return {"led_state": "OFF"}
 
     async def _handle_set_led(self, params: Dict[str, Any]) -> Dict[str, Any]:
         state = params.get("state", "off").lower()

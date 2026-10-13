@@ -1,20 +1,28 @@
+# ==========================================
+# RnR IoT Hub - Core Dependencies
+# ==========================================
+
+# AMQP & Messaging (RabbitMQ)
 aio-pika==10.1.0
-aiormq==7.2.1
-annotated-types==0.8.0
-idna==3.20
-iniconfig==2.3.1
-multidict==7.0.0
-packaging==26.3
-pamqp==4.0.1
 pika==1.4.4
-pluggy==1.6.0
-propcache==0.5.4
+
+# Hardware & Serial Communications
+pyserial==3.5
+pyudev==0.24.5
+
+# Configuration & Data Validation
 pydantic==2.14.0
-pydantic_core==2.50.0
-Pygments==2.21.0
+pydantic-settings==2.15.0
+python-dotenv==1.2.4
+
+# Storage (Async SQLite)
+aiosqlite==0.22.1
+
+# Local Web API & Server
+fastapi==0.143.0
+uvicorn==0.54.0
+httpx>=0.27.0
+
+# Testing Framework
 pytest==9.1.1
 pytest-asyncio==1.4.0
-python-dotenv==1.2.4
-typing-inspection==0.4.4
-typing_extensions==4.16.0
-yarl==1.25.1

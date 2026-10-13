@@ -12,6 +12,15 @@ class FakeIncomingMessage:
         self.acked = False
         self.rejected = False
 
+    async def ack(self):
+        self.acked = True
+
+    async def reject(self, requeue: bool = False):
+        self.rejected = True
+
+    async def nack(self, requeue: bool = True):
+        self.rejected = True
+
     def process(self, requeue: bool = False):
         class ProcessContext:
             def __init__(self, outer):
@@ -55,6 +64,7 @@ async def test_consumer_pipeline_valid_message(consumer):
     await consumer._on_message(msg)
 
     assert msg.acked is True
+    assert msg.rejected is False
     # Verify device state changed
     led_dev = consumer.router.device_manager.get_device("iot_001")
     assert led_dev._state["led"] == "on"
@@ -71,8 +81,9 @@ async def test_consumer_pipeline_invalid_schema(consumer):
     msg = FakeIncomingMessage(body=json.dumps(payload).encode("utf-8"))
     await consumer._on_message(msg)
 
-    # Caught gracefully and acknowledged/discarded
-    assert msg.acked is True
+    # Invalid schemas are rejected without requeue to dead-letter exchange
+    assert msg.rejected is True
+    assert msg.acked is False
 
 
 @pytest.mark.asyncio
@@ -80,4 +91,6 @@ async def test_consumer_pipeline_malformed_json(consumer):
     msg = FakeIncomingMessage(body=b"NOT_JSON_BODY")
     await consumer._on_message(msg)
 
-    assert msg.acked is True
+    # Malformed JSON is rejected without requeue to dead-letter exchange
+    assert msg.rejected is True
+    assert msg.acked is False

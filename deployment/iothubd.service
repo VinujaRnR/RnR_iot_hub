@@ -1,0 +1,32 @@
+[Unit]
+Description=Ubuntu IoT Scheduling Hub
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=iothub
+Group=iothub
+SupplementaryGroups=dialout
+
+WorkingDirectory=/opt/iothub
+EnvironmentFile=/etc/iothub/iothub.env
+
+ExecStart=/opt/iothub/.venv/bin/python -m main
+
+StateDirectory=iothub
+
+Restart=always
+RestartSec=5
+TimeoutStopSec=60
+
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+UMask=0077
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

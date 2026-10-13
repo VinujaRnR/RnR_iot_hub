@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# RnR Linux IoT Hub Management CLI Entrypoint
+set -e
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -f "$DIR/.venv/bin/python" ]; then
+    PYTHON="$DIR/.venv/bin/python"
+elif [ -f "/opt/iothub/.venv/bin/python" ]; then
+    PYTHON="/opt/iothub/.venv/bin/python"
+else
+    PYTHON="python3"
+fi
+
+exec "$PYTHON" "$DIR/iothubctl.py" "$@"

@@ -17,3 +17,39 @@ python tests/publish_test.py
 
 # 5. Run Full Acceptance Test Suite (Terminal 2)
 python tests/acceptance_test.py
+
+# 6. Run Complete Step 1 to Step 10 End-to-End Verification (Hardware + Schedule.json)
+python run_step1_to_step10.py
+
+# 7. Run Step 1 to Step 10 PyTest Suite
+python -m pytest tests/test_step1_to_step10.py -v
+
+# 8. Run Live Minute-by-Minute Real-Time Scheduler Observer
+python run_live_scheduler.py
+
+# 9. Dedicated Hardware Light Control Commands (Never drops commands)
+./light on       # Turns Built-in LED SOLID ON
+./light off      # Turns Built-in LED SOLID OFF
+./light status   # Checks current LED state
+./light toggle   # Toggles between ON and OFF
+
+# 10. Step 17 Ubuntu Installer & Systemd Verification
+python run_step17.py
+python -m pytest tests/test_step17.py -v
+
+# 11. Step 18 Complete System Final Acceptance Checklist (15/15)
+python run_step18.py
+python -m pytest tests/test_step18.py -v
+
+# 12. Post-Implementation Customizations & iothubctl Management
+python run_customizations.py
+python -m pytest tests/test_customizations.py -v
+
+# CLI Administration Commands (iothubctl)
+./bin/iothubctl status
+./bin/iothubctl doctor
+./bin/iothubctl config show
+./bin/iothubctl devices scan
+./bin/iothubctl devices list
+./bin/iothubctl backup create
+./bin/iothubctl profiles list

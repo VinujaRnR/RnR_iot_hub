@@ -1,0 +1,170 @@
+{
+  "schedule_id": "hub-01-2026-10-09",
+  "hub_id": "hub-01",
+  "date": "2026-10-09",
+  "timezone": "+05:30",
+  "production_orders": [
+    {
+      "production_order_id": 174513,
+      "stage_id": 30,
+      "resources": [
+        {
+          "resource_id": 20020,
+          "sub_resources": [
+            {
+              "sub_resource_id": 20023,
+              "iot_node_id": "98a316e6b658",
+              "channel_key": "relay:light",
+              "actions": [
+                {
+                  "action_id": "action-001",
+                  "action": "LIGHTS_ON",
+                  "time": "08:00:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-002",
+                  "action": "LIGHTS_ON",
+                  "time": "09:56:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-003",
+                  "action": "LIGHTS_OFF",
+                  "time": "10:15:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-004",
+                  "action": "LIGHTS_ON",
+                  "time": "11:00:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-005",
+                  "action": "LIGHTS_OFF",
+                  "time": "12:00:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-006",
+                  "action": "LIGHTS_ON",
+                  "time": "12:45:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-007",
+                  "action": "LIGHTS_OFF",
+                  "time": "13:30:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-008",
+                  "action": "LIGHTS_ON",
+                  "time": "14:15:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-009",
+                  "action": "LIGHTS_OFF",
+                  "time": "15:00:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-010",
+                  "action": "LIGHTS_ON",
+                  "time": "15:30:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-011",
+                  "action": "LIGHTS_OFF",
+                  "time": "16:00:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-012",
+                  "action": "LIGHTS_ON",
+                  "time": "16:30:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-013",
+                  "action": "LIGHTS_OFF",
+                  "time": "17:00:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-014",
+                  "action": "LIGHTS_ON",
+                  "time": "17:30:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-015",
+                  "action": "LIGHTS_OFF",
+                  "time": "18:00:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                },
+                {
+                  "action_id": "action-016",
+                  "action": "LIGHTS_ON",
+                  "time": "18:30:00",
+                  "channel_key": "relay:light",
+                  "iot_node_id": "98a316e6b658",
+                  "stage_id": 30,
+                  "params": {}
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
