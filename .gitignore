@@ -1,7 +1,126 @@
-.venv/
-.env
+# ==============================================================================
+# RnR Linux IoT Hub (iothubd) - Git Ignore Configuration
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Python Bytecode, Caches & Packaging
+# ------------------------------------------------------------------------------
 __pycache__/
-*.pyc
-.vscode/
+*.py[cod]
+*$py.class
+*.so
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ------------------------------------------------------------------------------
+# 2. Virtual Environments
+# ------------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ------------------------------------------------------------------------------
+# 3. Testing, Coverage & Quality Assurance
+# ------------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+htmlcov/
+.cache
+
+# ------------------------------------------------------------------------------
+# 4. Environment Variables, Secrets & Encryption Keys
+# ------------------------------------------------------------------------------
+# Environment config (preserve sample/example templates)
+.env
+.env.*
+!.env.example
+
+# AES master encryption keys, private keys & certificates
+*.key
+master.key
+keys/
+secrets/
+*.pem
+*.crt
+*.csr
+*.pfx
+*.p12
+
+# ------------------------------------------------------------------------------
+# 5. SQLite Databases, Journal/WAL Files & Backups
+# ------------------------------------------------------------------------------
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
 *.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.bak
+*.backup
+backups/
+
+# ------------------------------------------------------------------------------
+# 6. Service Runtime Artifacts, Logs & Sockets
+# ------------------------------------------------------------------------------
+*.log
+logs/
+*.pid
+*.sock
+
+# ------------------------------------------------------------------------------
+# 7. Embedded Firmware & Hardware Build Artifacts
+# ------------------------------------------------------------------------------
+*.hex
+*.elf
+*.eep
+*.lss
+*.sym
+*.map
+firmware/**/build/
+firmware/build/
+
+# External large binaries (exclude arduino-cli if downloaded locally, preserve wrapper scripts)
+bin/arduino-cli
+!bin/iothubctl
+
+# ------------------------------------------------------------------------------
+# 8. Editor, IDE & Operating System Artifacts
+# ------------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
