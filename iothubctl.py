@@ -707,9 +707,15 @@ async def cmd_update(args: argparse.Namespace) -> int:
         from storage.backup_manager import BackupManager
         db_path = "/var/lib/iothub/iothub.db"
         if os.path.exists(db_path):
-            bm = BackupManager(db_path=db_path)
-            bak = await bm.create_backup()
-            print(f" {GREEN}[✓]{RESET} Created pre-update backup: {bak.backup_path}")
+            db = get_db(db_path)
+            await db.connect()
+            try:
+                bm = BackupManager(db)
+                bak = await bm.create_backup()
+                bak_path = bak.get("backup_file") or bak.get("backup_path") or "ok"
+                print(f" {GREEN}[✓]{RESET} Created pre-update backup: {bak_path}")
+            finally:
+                await db.close()
     except Exception as exc:
         print(f" {YELLOW}[!]{RESET} Pre-update backup warning: {exc}")
 

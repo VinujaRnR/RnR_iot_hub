@@ -34,8 +34,17 @@ DEFAULT_BACKUP_DIR = "/var/lib/iothub/backups"
 class BackupManager:
     """Manages consistent SQLite online backups, integrity verification, and safe restoration."""
 
-    def __init__(self, db: DatabaseManager, backup_dir: Optional[str] = None):
-        self.db = db
+    def __init__(
+        self,
+        db: Optional[DatabaseManager] = None,
+        backup_dir: Optional[str] = None,
+        db_path: Optional[str] = None,
+    ):
+        if db is not None:
+            self.db = db
+        else:
+            path = db_path or os.environ.get("DATABASE_PATH") or "/var/lib/iothub/iothub.db"
+            self.db = DatabaseManager(db_path=path)
         self.backup_dir = Path(backup_dir or os.environ.get("IOTHUB_BACKUP_DIR") or DEFAULT_BACKUP_DIR)
 
     def _ensure_backup_dir(self) -> Path:
