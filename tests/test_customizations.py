@@ -315,14 +315,14 @@ async def test_customization_08_iothubctl_cli_execution(sandbox_env, capsys):
     res = await iothubctl.cmd_config(args)
     assert res == 0
     captured = capsys.readouterr()
-    assert "hub.id" in captured.stdout
+    assert "hub.id" in captured.out
 
     # 2. doctor
     args = parser.parse_args(["--db", db.db_path, "doctor"])
     res = await iothubctl.cmd_doctor(args)
     assert res in (0, 1)  # May warn on service if not installed on test runner
     captured = capsys.readouterr()
-    assert "Checking iothubd health" in captured.stdout
+    assert "Checking iothubd health" in captured.out
 
     # 3. devices list
     args = parser.parse_args(["--db", db.db_path, "devices", "list"])

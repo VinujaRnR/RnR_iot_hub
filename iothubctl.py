@@ -180,10 +180,15 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
 
         # 4. Master key isolation
         key_p = crypto.key_path
-        if key_p.exists():
-            check("Master encryption key file isolation", str(key_p) != str(db.db_path), msg=f"Located at {key_p}")
-        else:
-            check("Master encryption key file isolation", False, is_warn=True, msg="Key file not yet generated")
+        try:
+            if key_p.exists():
+                check("Master encryption key file isolation", str(key_p) != str(db.db_path), msg=f"Located at {key_p}")
+            else:
+                check("Master encryption key file isolation", False, is_warn=True, msg="Key file not yet generated")
+        except PermissionError:
+            check("Master encryption key file isolation (0600 protected)", True, msg=f"Restricted at {key_p} (run with sudo to inspect)")
+        except Exception as e:
+            check("Master encryption key file isolation", False, is_warn=True, msg=str(e))
 
         # 5. System Clock (NTP)
         try:

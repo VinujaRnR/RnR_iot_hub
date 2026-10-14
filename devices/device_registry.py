@@ -252,19 +252,21 @@ class DeviceRegistry:
             return None
 
         hint = binding.port_hint
+
+        # 1. Search active ports for direct hardware identity match (USB serial)
+        scanned = await self.scan_serial_ports()
+        for s in scanned:
+            if binding.usb_serial and s.serial_number and binding.usb_serial == s.serial_number:
+                if s.port != hint:
+                    await self.update_port_hint(device_mac, s.port)
+                    logger.info("Resolved renumbered port for '%s': %s -> %s", device_mac, hint, s.port)
+                return s.port
+
+        # 2. Check if current port_hint exists on system
         if hint and os.path.exists(hint):
             return hint
 
-        # Port renumbered or unplugged/replugged -> search active ports
-        scanned = await self.scan_serial_ports()
-        for s in scanned:
-            # Check match by USB serial number or VID:PID if recorded
-            if binding.usb_serial and s.serial_number and binding.usb_serial == s.serial_number:
-                await self.update_port_hint(device_mac, s.port)
-                logger.info("Resolved renumbered port for '%s': %s -> %s", device_mac, hint, s.port)
-                return s.port
-
-        # If exactly one serial port is active and port_hint was default, assign it
+        # 3. If exactly one serial port is active and port_hint was default, assign it
         if len(scanned) == 1:
             active_port = scanned[0].port
             await self.update_port_hint(device_mac, active_port)

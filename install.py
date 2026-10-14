@@ -121,13 +121,16 @@ class IoTInstaller:
         skip_venv: bool = False,
         dry_run: bool = False,
         wizard: bool = False,
+        cwd: str = "",
     ):
         self.destdir = Path(destdir).resolve() if destdir else None
         self.no_start = no_start
         self.skip_venv = skip_venv
         self.dry_run = dry_run
         self.wizard = wizard
+        self.caller_dir = Path(cwd).resolve() if cwd else Path.cwd()
         self.source_dir = Path(__file__).resolve().parent
+        self.config_vars: dict = {}
 
         # Target installation paths (prefixed by destdir if supplied)
         self.opt_dir = self._path("/opt/iothub")
@@ -400,60 +403,126 @@ class IoTInstaller:
             except Exception as exc:
                 log_warn(f"Could not chown venv: {exc}")
 
+    def load_configuration_defaults(self):
+        """Loads default configuration from existing iothub.env, caller .env, or production template."""
+        log_step("Resolving configuration parameters & credentials")
+        defaults = {
+            "HUB_ID": "hub-01",
+            "SCHEDULE_TIMEZONE": "Asia/Kolkata",
+            "DATABASE_PATH": str(self.var_dir / "iothub.db"),
+            "API_HOST": "127.0.0.1",
+            "API_PORT": "8765",
+            "LOG_LEVEL": "INFO",
+            "RABBITMQ_HOST": "47.236.59.210",
+            "RABBITMQ_AMQP_PORT": "5672",
+            "RABBITMQ_USER": "rnr_iot_user",
+            "RABBITMQ_PASSWORD": "rnr_iot_2025!",
+            "RABBITMQ_VHOST": "/",
+            "RABBITMQ_USE_SSL": "false",
+            "RABBITMQ_PREFETCH": "10",
+            "RABBITMQ_COMMAND_EXCHANGE": "iot_commands",
+            "RABBITMQ_COMMAND_QUEUE": "iot_exchange",
+            "RABBITMQ_COMMAND_ROUTING_KEY": "iot.command",
+            "USB_BAUD_RATE": "115200",
+            "USB_SCAN_INTERVAL": "5",
+            "COMMAND_TIMEOUT_SECONDS": "5",
+        }
+
+        # Check existing sources in priority order
+        sources_to_check = [
+            self.env_path,                             # /etc/iothub/iothub.env
+            self.caller_dir / ".env",                  # Current working directory .env
+            self.source_dir / ".env",                  # Local workspace .env
+            Path("/opt/iothub/.env"),
+        ]
+
+        loaded = {}
+        for src in sources_to_check:
+            try:
+                if src.exists() and src.is_file():
+                    with open(src, "r", encoding="utf-8") as f:
+                        for line in f:
+                            stripped = line.strip()
+                            if stripped and not stripped.startswith("#") and "=" in stripped:
+                                k, v = stripped.split("=", 1)
+                                k = k.strip()
+                                v = v.strip().strip("'\"")
+                                if k and k not in loaded:
+                                    loaded[k] = v
+                    log_ok(f"Loaded credentials and settings from: {src}")
+            except (PermissionError, OSError):
+                pass
+            except Exception as e:
+                log_warn(f"Could not read {src}: {e}")
+
+        # Merge with defaults
+        self.config_vars = {**defaults, **loaded}
+        self.config_vars["DATABASE_PATH"] = "/var/lib/iothub/iothub.db"
+
+    def run_configuration_wizard(self):
+        """Interactive terminal configuration wizard for iothubd."""
+        print(f"\n{BOLD}{CYAN}------------------------------------------------------------------------{RESET}")
+        print(f"{BOLD}{CYAN} iothubd Configuration Wizard                                           {RESET}")
+        print(f"{BOLD}{CYAN}------------------------------------------------------------------------{RESET}")
+
+        # If stdin is not a tty (e.g. piped via curl | bash), attempt to reconnect to /dev/tty
+        if not sys.stdin.isatty():
+            try:
+                if os.path.exists("/dev/tty") and os.access("/dev/tty", os.R_OK):
+                    sys.stdin = open("/dev/tty", "r")
+            except Exception:
+                pass
+
+        if not sys.stdin.isatty():
+            log_ok("Non-interactive mode detected. Preserving loaded/default configuration.")
+            return
+
+        try:
+            import getpass
+            print(f" {BOLD}Press Enter to keep existing [defaults] or type new value:{RESET}\n")
+
+            cur_hub = self.config_vars.get("HUB_ID", "hub-01")
+            cur_host = self.config_vars.get("RABBITMQ_HOST", "47.236.59.210")
+            cur_port = self.config_vars.get("RABBITMQ_AMQP_PORT", "5672")
+            cur_user = self.config_vars.get("RABBITMQ_USER", "rnr_iot_user")
+            cur_pass = self.config_vars.get("RABBITMQ_PASSWORD", "rnr_iot_2025!")
+            cur_tz = self.config_vars.get("SCHEDULE_TIMEZONE", "Asia/Kolkata")
+
+            hub_id = input(f" [1] Hub ID [{cur_hub}]: ").strip() or cur_hub
+            rmq_host = input(f" [2] RabbitMQ Host [{cur_host}]: ").strip() or cur_host
+            rmq_port = input(f" [3] RabbitMQ Port [{cur_port}]: ").strip() or cur_port
+            rmq_user = input(f" [4] RabbitMQ Username [{cur_user}]: ").strip() or cur_user
+
+            masked_hint = "*" * min(len(cur_pass), 8) if cur_pass else "none"
+            rmq_pass = getpass.getpass(f" [5] RabbitMQ Password [{masked_hint}]: ").strip() or cur_pass
+            tz = input(f" [6] Schedule Timezone [{cur_tz}]: ").strip() or cur_tz
+
+            self.config_vars["HUB_ID"] = hub_id
+            self.config_vars["RABBITMQ_HOST"] = rmq_host
+            self.config_vars["RABBITMQ_AMQP_PORT"] = rmq_port
+            self.config_vars["RABBITMQ_USER"] = rmq_user
+            self.config_vars["RABBITMQ_PASSWORD"] = rmq_pass
+            self.config_vars["SCHEDULE_TIMEZONE"] = tz
+
+            print(f"\n {GREEN}[✓]{RESET} Configuration confirmed: Hub={hub_id} ({tz}) | Broker={rmq_host}:{rmq_port}")
+        except Exception as exc:
+            log_warn(f"Wizard encountered exception, using existing defaults: {exc}")
+
     def deploy_environment_file(self):
-        """Generates /etc/iothub/iothub.env with DATABASE_PATH=/var/lib/iothub/iothub.db."""
-        log_step(f"Generating environment configuration at {self.env_path}")
-
-        # Read existing .env if present in workspace to preserve user credentials
-        local_env = self.source_dir / ".env"
-        env_lines = []
-
-        if local_env.exists():
-            with open(local_env, "r", encoding="utf-8") as f:
-                for line in f:
-                    stripped = line.strip()
-                    # Override DATABASE_PATH to target managed state directory
-                    if stripped.startswith("DATABASE_PATH="):
-                        env_lines.append("DATABASE_PATH=/var/lib/iothub/iothub.db\n")
-                    else:
-                        env_lines.append(line)
-        else:
-            # Default production configuration template
-            env_lines = [
-                "# ==========================================\n",
-                "# Ubuntu IoT Hub - System Environment Config\n",
-                "# File: /etc/iothub/iothub.env\n",
-                "# ==========================================\n",
-                "HUB_ID=hub-01\n",
-                "SCHEDULE_TIMEZONE=Asia/Kolkata\n",
-                "DATABASE_PATH=/var/lib/iothub/iothub.db\n",
-                "API_HOST=127.0.0.1\n",
-                "API_PORT=8765\n",
-                "LOG_LEVEL=INFO\n",
-                "RABBITMQ_HOST=47.236.59.210\n",
-                "RABBITMQ_AMQP_PORT=5672\n",
-                "RABBITMQ_USER=rnr_iot_user\n",
-                "RABBITMQ_PASSWORD=rnr_iot_2025!\n",
-                "RABBITMQ_VHOST=/\n",
-                "RABBITMQ_USE_SSL=false\n",
-                "RABBITMQ_PREFETCH=10\n",
-                "RABBITMQ_COMMAND_EXCHANGE=iot_commands\n",
-                "RABBITMQ_COMMAND_QUEUE=iot_exchange\n",
-                "RABBITMQ_COMMAND_ROUTING_KEY=iot.command\n",
-                "USB_BAUD_RATE=115200\n",
-                "USB_SCAN_INTERVAL=5\n",
-                "COMMAND_TIMEOUT_SECONDS=5\n",
-            ]
-
-        # Ensure DATABASE_PATH is explicitly set
-        has_db_path = any(l.strip().startswith("DATABASE_PATH=") for l in env_lines)
-        if not has_db_path:
-            env_lines.append("DATABASE_PATH=/var/lib/iothub/iothub.db\n")
+        """Generates /etc/iothub/iothub.env from resolved configuration."""
+        log_step(f"Writing environment configuration at {self.env_path}")
+        lines = [
+            "# ==========================================\n",
+            "# Ubuntu IoT Hub - System Environment Config\n",
+            f"# File: {self.env_path}\n",
+            "# ==========================================\n",
+        ]
+        for k, v in self.config_vars.items():
+            lines.append(f"{k}={v}\n")
 
         if not self.dry_run:
             with open(self.env_path, "w", encoding="utf-8") as f:
-                f.writelines(env_lines)
-            # Secure permissions: 0640 (readable by group iothub, writable by root)
+                f.writelines(lines)
             os.chmod(self.env_path, 0o640)
 
         log_ok(f"Created {self.env_path} (mode 0640).")
@@ -465,6 +534,99 @@ class IoTInstaller:
                 log_ok("Ownership set: root:iothub.")
             except Exception as exc:
                 log_warn(f"Could not chown {self.env_path}: {exc}")
+
+    def sync_sqlite_configuration(self):
+        """Initializes SQLite config tables and encrypts credentials with master key."""
+        log_step("Synchronizing encrypted credentials to SQLite")
+        if self.dry_run:
+            log_ok("[DRY-RUN] Would encrypt secrets and sync to SQLite.")
+            return
+
+        db_file = self.var_dir / "iothub.db"
+        try:
+            import sqlite3
+            from datetime import datetime, timezone
+
+            # Import CryptoManager
+            sys.path.insert(0, str(self.opt_dir))
+            sys.path.insert(0, str(self.source_dir))
+            from core.crypto import CryptoManager
+
+            crypto = CryptoManager(key_path=self.master_key_file)
+            now = datetime.now(timezone.utc).isoformat()
+
+            conn = sqlite3.connect(str(db_file))
+            with conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS config_settings (
+                        config_key TEXT PRIMARY KEY,
+                        storage_type TEXT NOT NULL,
+                        value_text TEXT,
+                        encrypted_value BLOB,
+                        nonce BLOB,
+                        key_version INTEGER,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS config_audit (
+                        audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        config_key TEXT NOT NULL,
+                        operation TEXT NOT NULL,
+                        actor TEXT NOT NULL,
+                        changed_at TEXT NOT NULL
+                    )
+                """)
+
+                # 1. Plaintext settings
+                plain_settings = {
+                    "hub.id": self.config_vars.get("HUB_ID", "hub-01"),
+                    "schedule.timezone": self.config_vars.get("SCHEDULE_TIMEZONE", "Asia/Kolkata"),
+                    "rabbitmq.host": self.config_vars.get("RABBITMQ_HOST", "47.236.59.210"),
+                    "rabbitmq.port": self.config_vars.get("RABBITMQ_AMQP_PORT", "5672"),
+                    "rabbitmq.username": self.config_vars.get("RABBITMQ_USER", "rnr_iot_user"),
+                }
+                for k, v in plain_settings.items():
+                    conn.execute("""
+                        INSERT INTO config_settings (config_key, storage_type, value_text, key_version, updated_at)
+                        VALUES (?, 'PLAINTEXT', ?, 1, ?)
+                        ON CONFLICT(config_key) DO UPDATE SET
+                            value_text = excluded.value_text,
+                            updated_at = excluded.updated_at
+                    """, (k, v, now))
+
+                # 2. Encrypted settings (RabbitMQ Password)
+                rmq_pass = self.config_vars.get("RABBITMQ_PASSWORD", "")
+                if rmq_pass:
+                    enc_val, nonce = crypto.encrypt_secret(
+                        plaintext=rmq_pass,
+                        config_key="rabbitmq.password",
+                        key_version=1,
+                    )
+                    conn.execute("""
+                        INSERT INTO config_settings (config_key, storage_type, encrypted_value, nonce, key_version, updated_at)
+                        VALUES ('rabbitmq.password', 'ENCRYPTED', ?, ?, 1, ?)
+                        ON CONFLICT(config_key) DO UPDATE SET
+                            encrypted_value = excluded.encrypted_value,
+                            nonce = excluded.nonce,
+                            updated_at = excluded.updated_at
+                    """, (enc_val, nonce, now))
+
+            conn.close()
+
+            # Set database permissions
+            if not self.destdir:
+                try:
+                    uid = pwd.getpwnam("iothub").pw_uid
+                    gid = grp.getgrnam("iothub").gr_gid
+                    os.chown(db_file, uid, gid)
+                    os.chmod(db_file, 0o660)
+                except Exception:
+                    pass
+
+            log_ok("RabbitMQ credentials encrypted with AES-256-GCM and stored in SQLite.")
+        except Exception as exc:
+            log_warn(f"Could not synchronize SQLite credentials during install: {exc}")
 
     def deploy_systemd_unit(self):
         """Installs the systemd unit file to /etc/systemd/system/iothubd.service."""
@@ -517,30 +679,6 @@ class IoTInstaller:
         except Exception as exc:
             log_warn(f"Could not create /usr/local/bin/iothubctl symlink: {exc}")
 
-    def run_configuration_wizard(self):
-        """Interactive terminal configuration wizard for iothubd."""
-        print(f"\n{BOLD}{CYAN}------------------------------------------------------------------------{RESET}")
-        print(f"{BOLD}{CYAN} iothubd Configuration Wizard                                           {RESET}")
-        print(f"{BOLD}{CYAN}------------------------------------------------------------------------{RESET}")
-
-        if not sys.stdin.isatty():
-            log_ok("Non-interactive mode detected. Initializing standard defaults & encrypted master key.")
-            return
-
-        try:
-            import getpass
-            hub_id = input(" [1] Hub ID [hub-01]: ").strip() or "hub-01"
-            rmq_host = input(" [2] RabbitMQ Host [localhost]: ").strip() or "localhost"
-            rmq_port = input(" [3] RabbitMQ Port [5672]: ").strip() or "5672"
-            rmq_user = input(" [4] RabbitMQ Username [guest]: ").strip() or "guest"
-            rmq_pass = getpass.getpass(" [5] RabbitMQ Password: ").strip() or "guest"
-            tz = input(" [6] Schedule Timezone [Asia/Kolkata]: ").strip() or "Asia/Kolkata"
-
-            log_ok(f"Configuring Hub: {hub_id} ({tz}) | Broker: {rmq_host}:{rmq_port}")
-            log_ok("RabbitMQ credentials encrypted with AES-256-GCM via master.key.")
-        except Exception as exc:
-            log_warn(f"Wizard encountered non-fatal prompt exception: {exc}")
-
     def execute_all(self):
         """Orchestrates the entire installation workflow."""
         print(f"{BOLD}========================================================================{RESET}")
@@ -554,9 +692,11 @@ class IoTInstaller:
         self.setup_encryption_keys()
         self.deploy_application_code()
         self.setup_python_environment()
-        self.deploy_environment_file()
+        self.load_configuration_defaults()
         if self.wizard:
             self.run_configuration_wizard()
+        self.deploy_environment_file()
+        self.sync_sqlite_configuration()
         self.create_cli_symlink()
         self.deploy_systemd_unit()
         self.activate_systemd_service()
@@ -753,6 +893,11 @@ def parse_args():
         action="store_true",
         help="Assume yes to confirmation prompts without prompting interactively",
     )
+    parser.add_argument(
+        "--cwd",
+        default="",
+        help="Caller current working directory (for loading existing .env)",
+    )
     return parser.parse_args()
 
 
@@ -764,6 +909,7 @@ def main():
         skip_venv=args.skip_venv,
         dry_run=args.dry_run,
         wizard=args.wizard,
+        cwd=args.cwd,
     )
     if args.uninstall:
         installer.uninstall(purge=args.purge, yes=args.yes)
