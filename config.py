@@ -15,14 +15,55 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+from pathlib import Path
+
+
+def _get_env_files() -> tuple[str, ...]:
+    """Finds accessible environment files: /etc/iothub/iothub.env, project .env, or cwd .env."""
+    files = []
+    # 1. System installed environment (/etc/iothub/iothub.env)
+    etc_env = Path("/etc/iothub/iothub.env")
+    try:
+        if etc_env.is_file() and os.access(etc_env, os.R_OK):
+            files.append(str(etc_env))
+    except Exception:
+        pass
+
+    # 2. Installed /opt/iothub/.env
+    opt_env = Path("/opt/iothub/.env")
+    try:
+        if opt_env.is_file() and os.access(opt_env, os.R_OK) and str(opt_env) not in files:
+            files.append(str(opt_env))
+    except Exception:
+        pass
+
+    # 3. Project root .env
+    proj_env = Path(__file__).resolve().parent / ".env"
+    try:
+        if proj_env.is_file() and os.access(proj_env, os.R_OK) and str(proj_env) not in files:
+            files.append(str(proj_env))
+    except Exception:
+        pass
+
+    # 4. Current working directory .env
+    cwd_env = Path.cwd() / ".env"
+    try:
+        if cwd_env.is_file() and os.access(cwd_env, os.R_OK) and str(cwd_env) not in files:
+            files.append(str(cwd_env))
+    except Exception:
+        pass
+
+    return tuple(files) if files else (".env",)
+
+
 class Settings(BaseSettings):
     """
     Validated IoT Hub configuration.
-    Loads from environment variables and .env file.
+    Loads from environment variables, /etc/iothub/iothub.env, and .env file.
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_get_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
     )

@@ -12,6 +12,13 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 PROJECT_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 
+# Source system environment if readable
+if [ -r "/etc/iothub/iothub.env" ]; then
+    set -a
+    . "/etc/iothub/iothub.env" 2>/dev/null || true
+    set +a
+fi
+
 # Locate iothubctl.py
 if [ -f "$PROJECT_ROOT/iothubctl.py" ]; then
     ENTRYPOINT="$PROJECT_ROOT/iothubctl.py"

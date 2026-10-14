@@ -31,6 +31,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 # Color formatting
 GREEN = "\033[92m"
@@ -235,16 +236,19 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
                 RABBITMQ_USE_SSL,
                 QUEUE_NAME,
             )
-            from urllib.parse import quote
-            stored_pw = None
-            try:
-                stored_pw = await cfg.get_setting("rabbitmq.password")
-            except Exception:
-                pass
+            cfg = ConfigRepository(db)
+            db_host = await cfg.get_setting("rabbitmq.host")
+            db_port = await cfg.get_setting("rabbitmq.port")
+            db_user = await cfg.get_setting("rabbitmq.username")
+            stored_pw = await cfg.get_setting("rabbitmq.password")
+
+            host = db_host or RABBITMQ_HOST
+            port = int(db_port) if db_port else RABBITMQ_AMQP_PORT
+            user = db_user or RABBITMQ_USER
             pw = stored_pw or RABBITMQ_PASSWORD
             sch = "amqps" if RABBITMQ_USE_SSL else "amqp"
             vh = quote(RABBITMQ_VHOST.lstrip("/"), safe="") if RABBITMQ_VHOST.lstrip("/") else ""
-            t_url = f"{sch}://{quote(RABBITMQ_USER, safe='')}:{quote(pw, safe='')}@{RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}/{vh}"
+            t_url = f"{sch}://{quote(user, safe='')}:{quote(pw, safe='')}@{host}:{port}/{vh}"
             t_conn = await asyncio.wait_for(aio_pika.connect_robust(t_url), timeout=5.0)
             t_ch = await t_conn.channel()
             q_info = ""
@@ -254,7 +258,7 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
             except Exception:
                 pass
             await t_conn.close()
-            check(f"RabbitMQ broker connectivity ({RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}){q_info}", True)
+            check(f"RabbitMQ broker connectivity ({host}:{port}){q_info}", True)
         except Exception as e:
             check("RabbitMQ broker connectivity", False, is_warn=True, msg=f"Could not connect: {e}")
 
@@ -301,25 +305,32 @@ async def cmd_rabbitmq(args: argparse.Namespace) -> int:
     from urllib.parse import quote
     import aio_pika
 
+    db_host = await cfg.get_setting("rabbitmq.host")
+    db_port = await cfg.get_setting("rabbitmq.port")
+    db_user = await cfg.get_setting("rabbitmq.username")
+
+    host = db_host or RABBITMQ_HOST
+    port = int(db_port) if db_port else RABBITMQ_AMQP_PORT
+    user = db_user or RABBITMQ_USER
     password_to_use = stored_password or RABBITMQ_PASSWORD
     scheme = "amqps" if RABBITMQ_USE_SSL else "amqp"
     vhost_clean = RABBITMQ_VHOST.lstrip("/")
     vhost_encoded = quote(vhost_clean, safe="") if vhost_clean else ""
-    user_encoded = quote(RABBITMQ_USER, safe="")
+    user_encoded = quote(user, safe="")
     password_encoded = quote(password_to_use, safe="")
-    amqp_url = f"{scheme}://{user_encoded}:{password_encoded}@{RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}/{vhost_encoded}"
+    amqp_url = f"{scheme}://{user_encoded}:{password_encoded}@{host}:{port}/{vhost_encoded}"
 
     print(f"\n{BOLD}{CYAN}RabbitMQ Broker Connection Diagnostics{RESET}")
     print(f"{'='*60}")
-    print(f" {BOLD}Host:{RESET}            {RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}")
+    print(f" {BOLD}Host:{RESET}            {host}:{port}")
     print(f" {BOLD}Virtual Host:{RESET}    {RABBITMQ_VHOST}")
-    print(f" {BOLD}Username:{RESET}        {RABBITMQ_USER}")
+    print(f" {BOLD}Username:{RESET}        {user}")
     print(f" {BOLD}Target Queue:{RESET}    {QUEUE_NAME}")
     print(f" {BOLD}Command Exch:{RESET}    {COMMAND_EXCHANGE}")
     print(f" {BOLD}Results Exch:{RESET}    {RESULTS_EXCHANGE}")
     print(f"{'='*60}")
 
-    print(f"\n {CYAN}==>{RESET} Connecting to broker at {RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}...")
+    print(f"\n {CYAN}==>{RESET} Connecting to broker at {host}:{port}...")
     start_time = time.time()
     try:
         connection = await asyncio.wait_for(aio_pika.connect_robust(amqp_url), timeout=7.0)
