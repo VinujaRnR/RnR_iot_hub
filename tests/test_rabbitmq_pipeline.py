@@ -443,3 +443,49 @@ async def test_consumer_topology_declaration():
 
         # Check manual ack consumption (no_ack=False)
         mock_inbound_queue.consume.assert_called_once_with(consumer._on_message, no_ack=False)
+
+
+@pytest.mark.asyncio
+async def test_topology_declaration_precondition_failed_fallback():
+    """Verify that consumer gracefully recovers when queue exists with different arguments."""
+    consumer = RabbitMQConsumer(
+        url="amqp://guest:guest@localhost:5672/",
+        queue_name="iot_exchange",
+        exchange_name="iot_commands",
+        routing_key="hub.hub-01",
+        deadletter_exchange="iot.deadletter",
+        prefetch_count=10,
+    )
+
+    mock_connection = AsyncMock()
+    mock_channel1 = AsyncMock()
+    mock_channel2 = AsyncMock()
+    mock_connection.channel = AsyncMock(side_effect=[mock_channel1, mock_channel2])
+
+    mock_dl_queue = AsyncMock()
+    mock_fallback_queue = AsyncMock()
+    mock_dlx = AsyncMock()
+    mock_cmd_exchange = AsyncMock()
+
+    mock_channel1.declare_exchange = AsyncMock(side_effect=[mock_dlx, mock_cmd_exchange])
+    # First queue declare succeeds (dl_queue), second fails with PRECONDITION_FAILED
+    mock_channel1.declare_queue = AsyncMock(
+        side_effect=[
+            mock_dl_queue,
+            Exception("PRECONDITION_FAILED - inequivalent arg 'x-dead-letter-exchange' for queue 'iot_exchange'"),
+        ]
+    )
+
+    mock_channel2.declare_exchange = AsyncMock(return_value=mock_cmd_exchange)
+    mock_channel2.declare_queue = AsyncMock(return_value=mock_fallback_queue)
+    mock_fallback_queue.consume = AsyncMock(return_value="consumer_tag_fallback")
+
+    with patch("aio_pika.connect_robust", AsyncMock(return_value=mock_connection)):
+        await consumer.connect()
+
+        # Channel 2 should have been opened and configured
+        mock_channel2.set_qos.assert_called_once_with(prefetch_count=10)
+        mock_channel2.declare_queue.assert_called_once_with("iot_exchange", passive=True)
+        mock_fallback_queue.bind.assert_any_call(mock_cmd_exchange, routing_key="hub.hub-01")
+        mock_fallback_queue.consume.assert_called_once_with(consumer._on_message, no_ack=False)
+

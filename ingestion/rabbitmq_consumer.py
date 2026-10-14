@@ -144,14 +144,35 @@ class RabbitMQConsumer:
         )
 
         # 3. Declare Inbound Queue with Dead-Letter configuration
-        queue = await self.channel.declare_queue(
-            self.queue_name,
-            durable=True,
-            arguments={
-                "x-dead-letter-exchange": self.deadletter_exchange,
-                "x-dead-letter-routing-key": f"deadletter.{self.queue_name}",
-            },
-        )
+        try:
+            queue = await self.channel.declare_queue(
+                self.queue_name,
+                durable=True,
+                arguments={
+                    "x-dead-letter-exchange": self.deadletter_exchange,
+                    "x-dead-letter-routing-key": f"deadletter.{self.queue_name}",
+                },
+            )
+        except Exception as exc:
+            # If the queue already exists on the broker with different arguments (e.g. without x-dead-letter-exchange),
+            # RabbitMQ closes the channel with PRECONDITION_FAILED (406).
+            # Catch this, reopen channel, re-declare exchange, and attach passively without argument mismatch.
+            if "PRECONDITION_FAILED" in str(exc) or "inequivalent arg" in str(exc):
+                logger.warning(
+                    "Queue '%s' exists on broker with different arguments (%s). Reopening channel and attaching passively...",
+                    self.queue_name,
+                    exc,
+                )
+                self.channel = await self.connection.channel()
+                await self.channel.set_qos(prefetch_count=self.prefetch_count)
+                exchange = await self.channel.declare_exchange(
+                    self.exchange_name,
+                    aio_pika.ExchangeType.TOPIC,
+                    durable=True,
+                )
+                queue = await self.channel.declare_queue(self.queue_name, passive=True)
+            else:
+                raise
 
         # Bind to command routing keys:
         # e.g. "hub.hub-01", "hub.hub-01.#", "iot.command"
