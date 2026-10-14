@@ -183,19 +183,25 @@ class EventOutbox:
             (limit,),
         ) as cur:
             rows = await cur.fetchall()
-            return [
-                {
+            results = []
+            for r in rows:
+                payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+                item = {
                     "id": r["id"],
                     "event_id": r["event_id"],
                     "event_type": r["event_type"],
                     "routing_key": r["routing_key"],
-                    "payload": json.loads(r["payload_json"]),
-                    "status": r["status"],
+                    "payload": payload,
+                    "status": payload.get("status", r["status"]),
+                    "outbox_status": r["status"],
                     "retry_count": r["retry_count"],
                     "created_at": r["created_at"],
                 }
-                for r in rows
-            ]
+                for k, v in payload.items():
+                    if k not in item:
+                        item[k] = v
+                results.append(item)
+            return results
 
     async def get_event(self, event_id: Any) -> Optional[Dict[str, Any]]:
         """Retrieves an outbox event by numeric ID or string event_id."""
@@ -207,17 +213,23 @@ class EventOutbox:
             r = await cur.fetchone()
             if not r:
                 return None
-            return {
+            payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+            item = {
                 "id": r["id"],
                 "event_id": r["event_id"],
                 "event_type": r["event_type"],
                 "routing_key": r["routing_key"],
-                "payload": json.loads(r["payload_json"]),
-                "status": r["status"],
+                "payload": payload,
+                "status": payload.get("status", r["status"]),
+                "outbox_status": r["status"],
                 "retry_count": r["retry_count"],
                 "created_at": r["created_at"],
                 "processed_at": r["processed_at"],
             }
+            for k, v in payload.items():
+                if k not in item:
+                    item[k] = v
+            return item
 
     async def mark_sent(self, event_id: int) -> None:
         """Marks an event as successfully delivered to RabbitMQ."""

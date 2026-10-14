@@ -26,6 +26,26 @@ class ScheduleRepository:
     def __init__(self, db: DatabaseManager):
         self.db = db
 
+    async def save_schedule(
+        self,
+        schedule_id: str,
+        date: str,
+        revision: int,
+        actions: List[Union[NormalizedActionRecord, Dict[str, Any]]],
+        raw_json: str = "",
+        status: str = "ACTIVE",
+        **kwargs: Any,
+    ) -> None:
+        """Alias for save_schedule_with_actions for compatibility."""
+        return await self.save_schedule_with_actions(
+            schedule_id=schedule_id,
+            date=date,
+            revision=revision,
+            actions=actions,
+            raw_json=raw_json,
+            status=status,
+        )
+
     async def save_schedule_with_actions(
         self,
         schedule_id: str,

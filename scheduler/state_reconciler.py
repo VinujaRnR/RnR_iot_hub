@@ -60,15 +60,30 @@ class StateReconciler:
 
     def __init__(
         self,
-        db: DatabaseManager,
-        schedule_repo: ScheduleRepository,
-        device_manager: DeviceManager,
+        db: Any,
+        schedule_repo: Optional[ScheduleRepository] = None,
+        device_manager: Optional[DeviceManager] = None,
         policy: Optional[MissedActionPolicy] = None,
     ):
-        self.db = db
-        self.schedule_repo = schedule_repo
-        self.device_manager = device_manager
+        if isinstance(db, ScheduleRepository) and schedule_repo is None:
+            self.schedule_repo = db
+            self.db = getattr(db, "db", None)
+            self.device_manager = device_manager or DeviceManager()
+        else:
+            self.db = db
+            self.schedule_repo = schedule_repo
+            self.device_manager = device_manager or DeviceManager()
         self.policy = policy or MissedActionPolicy()
+
+    async def reconcile(
+        self,
+        reference_time: Optional[str] = None,
+        current_time_iso: Optional[str] = None,
+    ) -> int:
+        """Compatibility method for tests returning total reconciled action count."""
+        ref = reference_time or current_time_iso
+        report = await self.reconcile_on_startup(current_time_iso=ref)
+        return len(report.applied_actions) + len(report.skipped_unsafe_actions) + len(report.superseded_actions)
 
     async def reconcile_on_startup(
         self,

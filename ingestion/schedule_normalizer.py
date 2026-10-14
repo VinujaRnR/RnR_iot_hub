@@ -60,6 +60,15 @@ class NormalizedActionRecord(BaseModel):
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
 
+    def __getitem__(self, item: str) -> Any:
+        return getattr(self, item)
+
+    def __contains__(self, item: str) -> bool:
+        return hasattr(self, item)
+
+    def get(self, item: str, default: Any = None) -> Any:
+        return getattr(self, item, default)
+
 
 @dataclass
 class ConflictDetail:

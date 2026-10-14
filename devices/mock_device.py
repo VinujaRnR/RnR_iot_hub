@@ -13,11 +13,26 @@ class DeviceActionError(Exception):
 class MockDevice:
     """Simulated IoT device that executes actions and returns JSON responses."""
 
-    def __init__(self, device_id: str, name: str, supported_actions: Optional[List[str]] = None):
+    def __init__(
+        self,
+        device_id: str,
+        name: str = "Mock Device",
+        supported_actions: Optional[List[str]] = None,
+        port: Optional[str] = None,
+        simulated_latency: float = 0.0,
+    ):
         self.device_id = device_id
         self.name = name
         self.supported_actions = supported_actions or []
+        self.port = port
+        self.simulated_latency = simulated_latency
+        self.command_history: List[Dict[str, Any]] = []
+        self.connected: bool = True
         self._state: Dict[str, Any] = {"online": True}
+
+    def close(self) -> None:
+        self.connected = False
+        self._state["online"] = False
 
     async def execute_command(self, action: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -30,6 +45,15 @@ class MockDevice:
                 f"Unsupported action '{action}' on device '{self.device_id}'. "
                 f"Supported actions: {self.supported_actions}"
             )
+
+        if self.simulated_latency > 0:
+            await asyncio.sleep(self.simulated_latency)
+
+        self.command_history.append({
+            "action": action,
+            "parameters": parameters,
+            "action_id": parameters.get("action_id"),
+        })
 
         # Built-in handler for specific actions
         handler_name = f"_handle_{action}"

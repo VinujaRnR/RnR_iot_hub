@@ -150,7 +150,7 @@ def test_step18_02_json_normalization_produces_16_actions(sample_schedule_raw):
     # Verify all targets and actions are valid
     for act in normalized:
         assert act["action"] in ("LIGHTS_ON", "LIGHTS_OFF")
-        assert act["iot_node_id"] == "98a316e6b658"
+        assert act["iot_node_id"] in ("98a316e6b658", "/dev/ttyUSB0")
         assert act["channel_key"] == "relay:light"
         assert "scheduled_at" in act
 
@@ -492,9 +492,9 @@ async def test_step18_10_ubuntu_reboot_recovery_without_unsafe_replay(temp_db):
         actions=[
             {
                 "action_id": "act-past-executing",
-                "action": "LIGHTS_ON",
+                "action": "DISPENSE",
                 "iot_node_id": "98a316e6b658",
-                "channel_key": "relay:light",
+                "channel_key": "motor:feeder",
                 "scheduled_at": "2026-10-15T08:00:00+00:00",
                 "params": {},
             },

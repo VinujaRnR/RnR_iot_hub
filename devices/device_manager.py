@@ -17,9 +17,18 @@ class DeviceManager:
         self._devices: Dict[str, Any] = {}
         self._aliases: Dict[str, str] = {}
 
-    def register_device(self, device: Any) -> None:
-        self._devices[device.device_id] = device
-        logger.info("Registered device '%s' (%s)", device.device_id, getattr(device, "name", "device"))
+    def register_device(self, device_or_id: Any, device: Optional[Any] = None) -> None:
+        if device is not None:
+            dev_id = str(device_or_id)
+            actual_device = device
+            self._devices[dev_id] = actual_device
+            if hasattr(actual_device, "device_id") and actual_device.device_id != dev_id:
+                self._devices[actual_device.device_id] = actual_device
+        else:
+            actual_device = device_or_id
+            dev_id = getattr(actual_device, "device_id", str(actual_device))
+            self._devices[dev_id] = actual_device
+        logger.info("Registered device '%s' (%s)", dev_id, getattr(actual_device, "name", "device"))
 
     def register_alias(self, alias: str, target_device_id: str) -> None:
         self._aliases[alias] = target_device_id
