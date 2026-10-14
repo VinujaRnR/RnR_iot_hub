@@ -114,6 +114,18 @@ async def cmd_status(args: argparse.Namespace) -> int:
             print(f"   Failed actions:  {len(failed_acts)}")
         else:
             print(f" {BOLD}Today's Schedule:{RESET} {YELLOW}NO ACTIVE SCHEDULE LOADED{RESET}")
+            for p in ("/var/lib/iothub/last_rabbitmq_message.json", "/tmp/last_rabbitmq_message.json"):
+                if os.path.exists(p):
+                    try:
+                        with open(p) as f:
+                            last_msg = json.load(f)
+                        recv = last_msg.get("received_at", "recent")
+                        dtype = last_msg.get("detected_type", "UNKNOWN")
+                        print(f"   {DIM}Last Inbound RabbitMQ Msg: {dtype} received at {recv}{RESET}")
+                        print(f"   {DIM}Run 'sudo iothubctl rabbitmq last' to inspect full payload.{RESET}")
+                        break
+                    except Exception:
+                        pass
 
         print(f" {BOLD}Outbox Pending:{RESET}  {len(pending_outbox)}")
         print()
@@ -280,9 +292,34 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
 # Command: iothubctl rabbitmq (test, check)
 # =====================================================================
 async def cmd_rabbitmq(args: argparse.Namespace) -> int:
-    """Tests connection to the RabbitMQ broker, validates queue and exchange status."""
+    """Tests connection to the RabbitMQ broker or inspects the last received message."""
     db = get_db(args.db)
     await db.connect()
+
+    sub = getattr(args, "rabbitmq_action", None)
+    if sub == "last":
+        for p in ("/var/lib/iothub/last_rabbitmq_message.json", "/tmp/last_rabbitmq_message.json"):
+            if os.path.exists(p):
+                try:
+                    with open(p) as f:
+                        data = json.load(f)
+                    print(f"\n{BOLD}{CYAN}Most Recent RabbitMQ Inbound Message{RESET}")
+                    print(f"{'='*60}")
+                    print(f" {BOLD}Received At:{RESET}     {data.get('received_at')}")
+                    print(f" {BOLD}Routing Key:{RESET}     {data.get('routing_key')}")
+                    print(f" {BOLD}Detected Type:{RESET}   {data.get('detected_type')}")
+                    print(f"{'='*60}")
+                    print(f"\n{BOLD}Payload JSON:{RESET}")
+                    print(json.dumps(data.get("payload", {}), indent=2))
+                    print()
+                    await db.close()
+                    return 0
+                except Exception as exc:
+                    print(f"{RED}Error reading {p}: {exc}{RESET}")
+        print(f"\n{YELLOW}No inbound RabbitMQ messages captured since service startup.{RESET}")
+        print(f"{DIM}Check recent daemon logs with: sudo journalctl -u iothubd -n 50{RESET}\n")
+        await db.close()
+        return 0
 
     cfg = ConfigRepository(db)
     stored_password = None
@@ -603,6 +640,140 @@ async def cmd_backup(args: argparse.Namespace) -> int:
 
 
 # =====================================================================
+# Command: iothubctl schedules (list, show, load)
+# =====================================================================
+async def cmd_schedules(args: argparse.Namespace) -> int:
+    db = get_db(args.db)
+    await db.connect()
+    try:
+        repo = ScheduleRepository(db)
+        sub = getattr(args, "schedule_action", None) or "list"
+
+        if sub == "list":
+            schedules = await repo.list_schedules()
+            print(f"\n{BOLD}{CYAN}iothubd — Daily Production Schedules{RESET}")
+            print(f"{'='*70}")
+            if not schedules:
+                print(f"  {YELLOW}No production schedules stored in SQLite database yet.{RESET}")
+                print(f"  {DIM}Note: Immediate commands (e.g. LIGHTS_OFF) execute directly as command batches.{RESET}")
+                print(f"  {DIM}To inspect the last RabbitMQ message: sudo iothubctl rabbitmq last{RESET}")
+                print(f"  {DIM}To manually load a schedule file:   sudo iothubctl schedules load schedule.json{RESET}\n")
+                return 0
+
+            for s in schedules:
+                actions = await repo.get_scheduled_actions(s["schedule_id"])
+                pending = sum(1 for a in actions if a["status"] == "PENDING")
+                completed = sum(1 for a in actions if a["status"] == "COMPLETED")
+                failed = sum(1 for a in actions if a["status"] == "FAILED")
+                other = len(actions) - pending - completed - failed
+                st_color = GREEN if s["status"] == "ACTIVE" else YELLOW
+                print(f"  • {BOLD}{s['schedule_id']}{RESET} (date: {s['date']}, rev: {s['revision']}) -> {st_color}{s['status']}{RESET}")
+                print(f"    Total actions: {len(actions)} | {GREEN}Completed: {completed}{RESET} | {YELLOW}Pending: {pending}{RESET} | {RED}Failed: {failed}{RESET}" + (f" | Other: {other}" if other else ""))
+            print()
+            return 0
+
+        elif sub == "show":
+            sched_id = args.schedule_id
+            if not sched_id:
+                schedules = await repo.list_schedules(status="ACTIVE")
+                if not schedules:
+                    schedules = await repo.list_schedules()
+                if not schedules:
+                    print(f"\n{YELLOW}No schedules found in database.{RESET}\n")
+                    return 1
+                sched_id = schedules[0]["schedule_id"]
+
+            sched = await repo.get_schedule(sched_id)
+            if not sched:
+                print(f"\n{RED}Schedule '{sched_id}' not found.{RESET}\n")
+                return 1
+
+            if getattr(args, "raw", False):
+                if sched.get("raw_json"):
+                    print(sched["raw_json"])
+                else:
+                    print(json.dumps(sched, indent=2))
+                return 0
+
+            actions = await repo.get_scheduled_actions(sched_id)
+            print(f"\n{BOLD}{CYAN}Schedule Details: {sched_id}{RESET}")
+            print(f"{'='*70}")
+            print(f"  {BOLD}Date:{RESET}       {sched['date']}")
+            print(f"  {BOLD}Revision:{RESET}   {sched['revision']}")
+            print(f"  {BOLD}Status:{RESET}     {GREEN if sched['status'] == 'ACTIVE' else YELLOW}{sched['status']}{RESET}")
+            print(f"  {BOLD}Hash:{RESET}       {sched.get('raw_json_hash', 'N/A')}")
+            print(f"\n {BOLD}Actions ({len(actions)}):{RESET}")
+            print(f"  {'TIME':<22} {'ACTION':<14} {'NODE ID':<16} {'CHANNEL':<14} {'STATUS'}")
+            print(f"  {'-'*22} {'-'*14} {'-'*16} {'-'*14} {'-'*10}")
+            for a in actions:
+                st = a.get("status", "PENDING")
+                st_c = GREEN if st == "COMPLETED" else (YELLOW if st == "PENDING" else RED)
+                print(f"  {a.get('scheduled_at', ''):<22} {a.get('action', ''):<14} {a.get('iot_node_id', ''):<16} {a.get('channel_key', ''):<14} {st_c}{st}{RESET}")
+            print()
+            return 0
+
+        elif sub == "load":
+            file_path = Path(args.file)
+            if not file_path.exists():
+                print(f"\n{RED}Error: Schedule file '{file_path}' does not exist.{RESET}\n")
+                return 1
+
+            content = file_path.read_text(encoding="utf-8")
+            from ingestion.validator import ScheduleValidator
+            from ingestion.schedule_normalizer import ScheduleNormalizer
+            val = ScheduleValidator()
+            norm = ScheduleNormalizer()
+
+            payload = json.loads(content)
+            validated = val.validate(payload)
+            normalized = norm.normalize(payload)
+
+            await repo.save_schedule_with_actions(
+                schedule_id=validated.schedule_id,
+                date=validated.date,
+                revision=validated.revision,
+                actions=normalized,
+                raw_json=content,
+            )
+            print(f"\n{GREEN}[✓]{RESET} Successfully loaded schedule '{validated.schedule_id}' (rev {validated.revision}) with {len(normalized)} action(s).\n")
+            return 0
+
+        return 0
+    finally:
+        await db.close()
+
+
+# =====================================================================
+# Command: iothubctl actions (list)
+# =====================================================================
+async def cmd_actions(args: argparse.Namespace) -> int:
+    db = get_db(args.db)
+    await db.connect()
+    try:
+        repo = ScheduleRepository(db)
+        status_filter = getattr(args, "status", None)
+        limit = getattr(args, "limit", 50) or 50
+
+        actions = await repo.get_actions(status=status_filter, limit=limit)
+        print(f"\n{BOLD}{CYAN}iothubd — Scheduled Actions{RESET}")
+        print(f"{'='*75}")
+        if not actions:
+            print(f"  {YELLOW}No actions found matching criteria.{RESET}\n")
+            return 0
+
+        print(f"  {'ACTION ID':<20} {'ACTION':<14} {'SCHEDULED AT':<24} {'STATUS'}")
+        print(f"  {'-'*20} {'-'*14} {'-'*24} {'-'*10}")
+        for a in actions:
+            st = a.get("status", "PENDING")
+            st_c = GREEN if st == "COMPLETED" else (YELLOW if st == "PENDING" else RED)
+            print(f"  {a.get('action_id', ''):<20} {a.get('action', ''):<14} {a.get('scheduled_at', ''):<24} {st_c}{st}{RESET}")
+        print()
+        return 0
+    finally:
+        await db.close()
+
+
+# =====================================================================
 # Main Parser Construction
 # =====================================================================
 def build_parser() -> argparse.ArgumentParser:
@@ -666,6 +837,24 @@ def build_parser() -> argparse.ArgumentParser:
     rmq_subs = rmq_parser.add_subparsers(dest="rabbitmq_action")
     rmq_subs.add_parser("test", help="Test live connection to RabbitMQ broker and verify queues")
     rmq_subs.add_parser("check", help="Alias for test")
+    rmq_subs.add_parser("last", help="Inspect the most recent incoming RabbitMQ message/schedule")
+
+    # schedules
+    sched_parser = subparsers.add_parser("schedules", help="View daily schedules and inspect actions")
+    sched_subs = sched_parser.add_subparsers(dest="schedule_action")
+    sched_subs.add_parser("list", help="List all stored daily schedules")
+    show_sched = sched_subs.add_parser("show", help="Show details or raw JSON of a schedule")
+    show_sched.add_argument("schedule_id", nargs="?", default=None, help="Schedule ID (defaults to active schedule)")
+    show_sched.add_argument("--raw", action="store_true", help="Print original raw JSON received from RabbitMQ")
+    load_sched = sched_subs.add_parser("load", help="Load and validate a local schedule JSON file")
+    load_sched.add_argument("file", help="Path to schedule JSON file")
+
+    # actions
+    act_parser = subparsers.add_parser("actions", help="Inspect scheduled actions and execution history")
+    act_subs = act_parser.add_subparsers(dest="action_action")
+    act_list = act_subs.add_parser("list", help="List actions across daily schedules")
+    act_list.add_argument("--status", choices=["PENDING", "COMPLETED", "FAILED", "SUPERSEDED", "SKIPPED_UNSAFE"], default=None, help="Filter by status")
+    act_list.add_argument("--limit", type=int, default=50, help="Max actions to list")
 
     # uninstall
     uninst_p = subparsers.add_parser("uninstall", help="Uninstall iothubd service and application")
@@ -775,6 +964,8 @@ def main():
         "status": cmd_status,
         "doctor": cmd_doctor,
         "rabbitmq": cmd_rabbitmq,
+        "schedules": cmd_schedules,
+        "actions": cmd_actions,
         "config": cmd_config,
         "devices": cmd_devices,
         "profiles": cmd_profiles,

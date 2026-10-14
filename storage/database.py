@@ -120,11 +120,16 @@ class DatabaseManager:
                 revision INTEGER NOT NULL,
                 status TEXT NOT NULL DEFAULT 'ACTIVE',
                 raw_json_hash TEXT NOT NULL,
+                raw_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        try:
+            await self._conn.execute("ALTER TABLE schedules ADD COLUMN raw_json TEXT;")
+        except Exception:
+            pass
 
         # 2. Scheduled Actions table
         await self._conn.execute(

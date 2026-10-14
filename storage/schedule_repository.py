@@ -76,16 +76,17 @@ class ScheduleRepository:
             # 2. Insert or update top-level schedule
             await conn.execute(
                 """
-                INSERT INTO schedules (schedule_id, date, revision, status, raw_json_hash, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO schedules (schedule_id, date, revision, status, raw_json_hash, raw_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(schedule_id) DO UPDATE SET
                     date = excluded.date,
                     revision = excluded.revision,
                     status = excluded.status,
                     raw_json_hash = excluded.raw_json_hash,
+                    raw_json = excluded.raw_json,
                     updated_at = excluded.updated_at
                 """,
-                (schedule_id, date, revision, status, raw_hash, now, now),
+                (schedule_id, date, revision, status, raw_hash, raw_json, now, now),
             )
 
             # 3. Preserve status and execution time of existing actions (e.g. COMPLETED or EXECUTING)
@@ -148,7 +149,7 @@ class ScheduleRepository:
     async def get_schedule(self, schedule_id: str) -> Optional[Dict[str, Any]]:
         """Retrieves schedule header record."""
         async with self.db.connection.execute(
-            "SELECT schedule_id, date, revision, status, raw_json_hash, created_at, updated_at FROM schedules WHERE schedule_id = ?",
+            "SELECT schedule_id, date, revision, status, raw_json_hash, raw_json, created_at, updated_at FROM schedules WHERE schedule_id = ?",
             (schedule_id,),
         ) as cur:
             row = await cur.fetchone()

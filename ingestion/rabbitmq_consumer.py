@@ -241,6 +241,39 @@ class RabbitMQConsumer:
             or ("schedules" in payload and any("time" in s or "sub_resources" in s for s in payload["schedules"]))
         )
 
+        rk = getattr(message, "routing_key", "")
+        detected_type = "SCHEDULE" if is_schedule else "COMMAND_BATCH"
+        log_snippet = raw_body if len(raw_body) <= 1500 else raw_body[:1500] + "... [truncated]"
+        logger.info(
+            "[RABBITMQ INBOUND] Received message on routing_key='%s' (type=%s, bytes=%d):\n%s",
+            rk,
+            detected_type,
+            len(raw_body),
+            log_snippet,
+        )
+
+        # Persist last inbound message for inspection via iothubctl rabbitmq last
+        try:
+            from datetime import timezone
+            meta = {
+                "received_at": datetime.now(timezone.utc).isoformat(),
+                "routing_key": rk,
+                "detected_type": detected_type,
+                "raw_body": raw_body,
+                "payload": payload,
+            }
+            meta_json = json.dumps(meta, indent=2)
+            for path in ("/var/lib/iothub/last_rabbitmq_message.json", "/tmp/last_rabbitmq_message.json"):
+                try:
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w") as f:
+                        f.write(meta_json)
+                    break
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.debug("Could not record last RabbitMQ message: %s", exc)
+
         if is_schedule:
             await self._process_schedule_document(message, payload, raw_body)
         else:
