@@ -223,6 +223,41 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
         schedules = await repo.list_schedules(status="ACTIVE")
         check("Schedule engine state", True)
 
+        # 9. RabbitMQ Broker Connectivity
+        try:
+            import aio_pika
+            from config import (
+                RABBITMQ_HOST,
+                RABBITMQ_AMQP_PORT,
+                RABBITMQ_USER,
+                RABBITMQ_PASSWORD,
+                RABBITMQ_VHOST,
+                RABBITMQ_USE_SSL,
+                QUEUE_NAME,
+            )
+            from urllib.parse import quote
+            stored_pw = None
+            try:
+                stored_pw = await cfg.get_setting("rabbitmq.password")
+            except Exception:
+                pass
+            pw = stored_pw or RABBITMQ_PASSWORD
+            sch = "amqps" if RABBITMQ_USE_SSL else "amqp"
+            vh = quote(RABBITMQ_VHOST.lstrip("/"), safe="") if RABBITMQ_VHOST.lstrip("/") else ""
+            t_url = f"{sch}://{quote(RABBITMQ_USER, safe='')}:{quote(pw, safe='')}@{RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}/{vh}"
+            t_conn = await asyncio.wait_for(aio_pika.connect_robust(t_url), timeout=5.0)
+            t_ch = await t_conn.channel()
+            q_info = ""
+            try:
+                t_q = await t_ch.declare_queue(QUEUE_NAME, passive=True)
+                q_info = f" (Queue '{QUEUE_NAME}' ready, {t_q.declaration_result.message_count} msg)"
+            except Exception:
+                pass
+            await t_conn.close()
+            check(f"RabbitMQ broker connectivity ({RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}){q_info}", True)
+        except Exception as e:
+            check("RabbitMQ broker connectivity", False, is_warn=True, msg=f"Could not connect: {e}")
+
         print()
         if failures == 0 and warnings == 0:
             print(f" {BOLD}{GREEN}Result: All diagnostic checks passed (System Healthy)!{RESET}\n")
@@ -235,6 +270,105 @@ async def cmd_doctor(args: argparse.Namespace) -> int:
             return 1
     finally:
         await db.close()
+
+
+# =====================================================================
+# Command: iothubctl rabbitmq (test, check)
+# =====================================================================
+async def cmd_rabbitmq(args: argparse.Namespace) -> int:
+    """Tests connection to the RabbitMQ broker, validates queue and exchange status."""
+    db = get_db(args.db)
+    await db.connect()
+
+    cfg = ConfigRepository(db)
+    stored_password = None
+    try:
+        stored_password = await cfg.get_setting("rabbitmq.password")
+    except Exception:
+        pass
+
+    from config import (
+        RABBITMQ_HOST,
+        RABBITMQ_AMQP_PORT,
+        RABBITMQ_USER,
+        RABBITMQ_PASSWORD,
+        RABBITMQ_VHOST,
+        RABBITMQ_USE_SSL,
+        QUEUE_NAME,
+        COMMAND_EXCHANGE,
+        RESULTS_EXCHANGE,
+    )
+    from urllib.parse import quote
+    import aio_pika
+
+    password_to_use = stored_password or RABBITMQ_PASSWORD
+    scheme = "amqps" if RABBITMQ_USE_SSL else "amqp"
+    vhost_clean = RABBITMQ_VHOST.lstrip("/")
+    vhost_encoded = quote(vhost_clean, safe="") if vhost_clean else ""
+    user_encoded = quote(RABBITMQ_USER, safe="")
+    password_encoded = quote(password_to_use, safe="")
+    amqp_url = f"{scheme}://{user_encoded}:{password_encoded}@{RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}/{vhost_encoded}"
+
+    print(f"\n{BOLD}{CYAN}RabbitMQ Broker Connection Diagnostics{RESET}")
+    print(f"{'='*60}")
+    print(f" {BOLD}Host:{RESET}            {RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}")
+    print(f" {BOLD}Virtual Host:{RESET}    {RABBITMQ_VHOST}")
+    print(f" {BOLD}Username:{RESET}        {RABBITMQ_USER}")
+    print(f" {BOLD}Target Queue:{RESET}    {QUEUE_NAME}")
+    print(f" {BOLD}Command Exch:{RESET}    {COMMAND_EXCHANGE}")
+    print(f" {BOLD}Results Exch:{RESET}    {RESULTS_EXCHANGE}")
+    print(f"{'='*60}")
+
+    print(f"\n {CYAN}==>{RESET} Connecting to broker at {RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}...")
+    start_time = time.time()
+    try:
+        connection = await asyncio.wait_for(aio_pika.connect_robust(amqp_url), timeout=7.0)
+        elapsed = (time.time() - start_time) * 1000
+        print(f" {GREEN}[✓]{RESET} Connection established successfully in {elapsed:.1f}ms")
+    except asyncio.TimeoutError:
+        print(f" {RED}[✗]{RESET} Connection timed out after 7.0s. Check firewall and broker host: {RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT}")
+        await db.close()
+        return 1
+    except Exception as exc:
+        print(f" {RED}[✗]{RESET} Connection failed: {exc}")
+        await db.close()
+        return 1
+
+    try:
+        print(f" {CYAN}==>{RESET} Opening AMQP channel...")
+        channel = await connection.channel()
+        print(f" {GREEN}[✓]{RESET} AMQP Channel opened.")
+
+        # Check Queue
+        print(f" {CYAN}==>{RESET} Inspecting command queue '{QUEUE_NAME}'...")
+        try:
+            q = await channel.declare_queue(QUEUE_NAME, passive=True)
+            msg_count = q.declaration_result.message_count
+            cons_count = q.declaration_result.consumer_count
+            print(f" {GREEN}[✓]{RESET} Queue '{QUEUE_NAME}' is ACTIVE:")
+            print(f"     - Pending messages: {msg_count}")
+            print(f"     - Active consumers: {cons_count}")
+        except Exception as q_exc:
+            print(f" {YELLOW}[!]{RESET} Passive queue check warning: {q_exc}")
+
+        # Check Exchanges
+        for ex_name, ex_label in [(COMMAND_EXCHANGE, "Inbound command"), (RESULTS_EXCHANGE, "Results publish")]:
+            print(f" {CYAN}==>{RESET} Inspecting {ex_label} exchange '{ex_name}'...")
+            try:
+                ex = await channel.declare_exchange(ex_name, passive=True)
+                print(f" {GREEN}[✓]{RESET} Exchange '{ex_name}' is ACTIVE.")
+            except Exception as ex_exc:
+                print(f" {YELLOW}[!]{RESET} Exchange warning for '{ex_name}': {ex_exc}")
+
+        await connection.close()
+        await db.close()
+        print(f"\n {BOLD}{GREEN}Result: RabbitMQ Connection is HEALTHY!{RESET}\n")
+        return 0
+    except Exception as exc:
+        print(f" {RED}[✗]{RESET} Diagnostic inspection failed: {exc}")
+        await connection.close()
+        await db.close()
+        return 1
 
 
 # =====================================================================
@@ -516,6 +650,12 @@ def build_parser() -> argparse.ArgumentParser:
     res_p = bak_subs.add_parser("restore", help="Restore from backup")
     res_p.add_argument("path", help="Path to backup database")
 
+    # rabbitmq
+    rmq_parser = subparsers.add_parser("rabbitmq", help="Diagnose and test RabbitMQ broker connection")
+    rmq_subs = rmq_parser.add_subparsers(dest="rabbitmq_action")
+    rmq_subs.add_parser("test", help="Test live connection to RabbitMQ broker and verify queues")
+    rmq_subs.add_parser("check", help="Alias for test")
+
     # uninstall
     uninst_p = subparsers.add_parser("uninstall", help="Uninstall iothubd service and application")
     uninst_p.add_argument("--purge", action="store_true", help="Permanently delete databases, encryption keys, and configuration (/var/lib/iothub, /etc/iothub)")
@@ -617,6 +757,7 @@ def main():
     handlers = {
         "status": cmd_status,
         "doctor": cmd_doctor,
+        "rabbitmq": cmd_rabbitmq,
         "config": cmd_config,
         "devices": cmd_devices,
         "profiles": cmd_profiles,

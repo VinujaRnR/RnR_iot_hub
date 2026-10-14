@@ -149,6 +149,12 @@ settings: Settings = load_settings()
 # Module-level exports for direct import and backward compatibility
 HUB_ID = settings.HUB_ID
 RABBITMQ_URL = settings.RABBITMQ_URL
+RABBITMQ_HOST = settings.RABBITMQ_HOST
+RABBITMQ_AMQP_PORT = settings.RABBITMQ_AMQP_PORT
+RABBITMQ_USER = settings.RABBITMQ_USER
+RABBITMQ_PASSWORD = settings.RABBITMQ_PASSWORD
+RABBITMQ_VHOST = settings.RABBITMQ_VHOST
+RABBITMQ_USE_SSL = settings.RABBITMQ_USE_SSL
 SCHEDULE_TIMEZONE = settings.SCHEDULE_TIMEZONE
 DATABASE_PATH = settings.DATABASE_PATH
 USB_BAUD_RATE = settings.USB_BAUD_RATE
