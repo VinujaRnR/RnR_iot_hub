@@ -16,11 +16,6 @@
 set -euo pipefail
 
 CALLER_PWD="$PWD"
-
-# Reconnect STDIN to controlling terminal if script was piped via curl | sudo bash
-if [ ! -t 0 ] && [ -r /dev/tty ]; then
-    exec < /dev/tty 2>/dev/null || true
-fi
 GREEN="\033[92m"
 YELLOW="\033[93m"
 CYAN="\033[96m"
@@ -130,7 +125,11 @@ if [ "$UNINSTALL" = true ]; then
     fi
 
     if [ -n "$INSTALL_PY" ] && command -v python3 >/dev/null 2>&1; then
-        python3 "$INSTALL_PY" "${INSTALL_ARGS[@]}"
+        if [ -r /dev/tty ]; then
+            python3 "$INSTALL_PY" "${INSTALL_ARGS[@]}" < /dev/tty
+        else
+            python3 "$INSTALL_PY" "${INSTALL_ARGS[@]}"
+        fi
         exit 0
     else
         log_warn "Python or install.py not found. Performing standalone service & file cleanup..."
@@ -224,7 +223,11 @@ if [ "$WIZARD" = true ]; then
 fi
 INSTALL_ARGS+=("--cwd" "$CALLER_PWD")
 
-"$PYTHON_BIN" "$INSTALL_PY" "${INSTALL_ARGS[@]}"
+if [ -r /dev/tty ]; then
+    "$PYTHON_BIN" "$INSTALL_PY" "${INSTALL_ARGS[@]}" < /dev/tty
+else
+    "$PYTHON_BIN" "$INSTALL_PY" "${INSTALL_ARGS[@]}"
+fi
 
 # Symlink iothubctl into /usr/local/bin
 if [ -f "/opt/iothub/bin/iothubctl" ]; then
