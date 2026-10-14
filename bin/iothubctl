@@ -2,14 +2,37 @@
 # RnR Linux IoT Hub Management CLI Entrypoint
 set -e
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve symlinks to find the real physical script location
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ] || [ -L "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+PROJECT_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 
-if [ -f "$DIR/.venv/bin/python" ]; then
-    PYTHON="$DIR/.venv/bin/python"
-elif [ -f "/opt/iothub/.venv/bin/python" ]; then
-    PYTHON="/opt/iothub/.venv/bin/python"
+# Locate iothubctl.py
+if [ -f "$PROJECT_ROOT/iothubctl.py" ]; then
+    ENTRYPOINT="$PROJECT_ROOT/iothubctl.py"
+elif [ -f "/opt/iothub/iothubctl.py" ]; then
+    ENTRYPOINT="/opt/iothub/iothubctl.py"
+elif [ -f "$SCRIPT_DIR/iothubctl.py" ]; then
+    ENTRYPOINT="$SCRIPT_DIR/iothubctl.py"
 else
-    PYTHON="python3"
+    echo "Error: iothubctl.py not found in $PROJECT_ROOT or /opt/iothub" >&2
+    exit 1
 fi
 
-exec "$PYTHON" "$DIR/iothubctl.py" "$@"
+# Locate Python virtual environment or runtime
+if [ -f "$PROJECT_ROOT/.venv/bin/python" ]; then
+    PYTHON="$PROJECT_ROOT/.venv/bin/python"
+elif [ -f "/opt/iothub/.venv/bin/python" ]; then
+    PYTHON="/opt/iothub/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3)"
+else
+    PYTHON="python"
+fi
+
+exec "$PYTHON" "$ENTRYPOINT" "$@"

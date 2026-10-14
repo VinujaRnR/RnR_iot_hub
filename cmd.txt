@@ -53,3 +53,15 @@ python -m pytest tests/test_customizations.py -v
 ./bin/iothubctl devices list
 ./bin/iothubctl backup create
 ./bin/iothubctl profiles list
+
+# 13. Uninstallation Commands
+# Standard (stops & removes service, application files; preserves config & DB):
+sudo iothubctl uninstall
+sudo bash uninstall.sh
+sudo python3 install.py --uninstall
+
+# Purge (removes everything including /etc/iothub and /var/lib/iothub database):
+sudo iothubctl uninstall --purge
+sudo bash uninstall.sh --purge
+sudo python3 install.py --uninstall --purge
+

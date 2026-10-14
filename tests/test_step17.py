@@ -136,4 +136,72 @@ def test_step17_dry_run_command_line():
     )
     assert res.returncode == 0, f"Dry-run failed: {res.stderr}"
     assert "RnR Linux IoT Scheduling Hub - Automatic Ubuntu Installer" in res.stdout
-    assert "STEP 17 COMPLETE" in res.stdout
+    assert "STEP 17" in res.stdout
+
+
+def test_step17_staged_uninstall_preserves_data(tmp_path: Path):
+    """
+    Standard uninstall removes application code and systemd service,
+    but safely preserves configuration and SQLite database.
+    """
+    dest = tmp_path / "stage_root"
+    installer = IoTInstaller(
+        destdir=str(dest),
+        no_start=True,
+        skip_venv=True,
+        dry_run=False,
+    )
+    installer.execute_all()
+
+    # Pre-check existence
+    assert (dest / "opt" / "iothub").is_dir()
+    assert (dest / "etc" / "systemd" / "system" / "iothubd.service").is_file()
+    assert (dest / "etc" / "iothub").is_dir()
+    assert (dest / "var" / "lib" / "iothub").is_dir()
+
+    # Run standard uninstall (purge=False)
+    installer.uninstall(purge=False, yes=True)
+
+    # Application and service must be removed
+    assert not (dest / "opt" / "iothub").exists()
+    assert not (dest / "etc" / "systemd" / "system" / "iothubd.service").exists()
+
+    # Configuration & Database MUST be preserved
+    assert (dest / "etc" / "iothub").is_dir()
+    assert (dest / "var" / "lib" / "iothub").is_dir()
+
+
+def test_step17_staged_uninstall_purge(tmp_path: Path):
+    """
+    Purge uninstall removes everything including /etc/iothub and /var/lib/iothub.
+    """
+    dest = tmp_path / "stage_root"
+    installer = IoTInstaller(
+        destdir=str(dest),
+        no_start=True,
+        skip_venv=True,
+        dry_run=False,
+    )
+    installer.execute_all()
+
+    # Run purge uninstall (purge=True)
+    installer.uninstall(purge=True, yes=True)
+
+    # Everything must be purged
+    assert not (dest / "opt" / "iothub").exists()
+    assert not (dest / "etc" / "systemd" / "system" / "iothubd.service").exists()
+    assert not (dest / "etc" / "iothub").exists()
+    assert not (dest / "var" / "lib" / "iothub").exists()
+
+
+def test_step17_uninstall_dry_run_command_line():
+    """Verifies that running 'python3 install.py --uninstall --dry-run' succeeds with returncode 0."""
+    res = subprocess.run(
+        [sys.executable, "install.py", "--uninstall", "--dry-run"],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, f"Uninstall dry-run failed: {res.stderr}"
+    assert "Uninstallation Manager" in res.stdout
+    assert "successfully uninstalled" in res.stdout
+

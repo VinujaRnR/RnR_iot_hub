@@ -62,6 +62,9 @@ REPO_URL=""
 GIT_REF=""
 DRY_RUN=false
 WIZARD=true
+UNINSTALL=false
+PURGE=false
+ASSUME_YES=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -81,11 +84,69 @@ while [[ $# -gt 0 ]]; do
             WIZARD=false
             shift
             ;;
+        --uninstall)
+            UNINSTALL=true
+            shift
+            ;;
+        --purge)
+            PURGE=true
+            shift
+            ;;
+        -y|--yes)
+            ASSUME_YES=true
+            shift
+            ;;
         *)
             shift
             ;;
     esac
 done
+
+# 2.1 Handle Uninstallation if requested
+if [ "$UNINSTALL" = true ]; then
+    log_info "Initiating uninstallation workflow..."
+    INSTALL_ARGS=("--uninstall")
+    if [ "$PURGE" = true ]; then
+        INSTALL_ARGS+=("--purge")
+    fi
+    if [ "$ASSUME_YES" = true ]; then
+        INSTALL_ARGS+=("--yes")
+    fi
+    if [ "$DRY_RUN" = true ]; then
+        INSTALL_ARGS+=("--dry-run")
+    fi
+
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    INSTALL_PY=""
+    if [ -f "$SCRIPT_DIR/install.py" ]; then
+        INSTALL_PY="$SCRIPT_DIR/install.py"
+    elif [ -f "/opt/iothub/install.py" ]; then
+        INSTALL_PY="/opt/iothub/install.py"
+    fi
+
+    if [ -n "$INSTALL_PY" ] && command -v python3 >/dev/null 2>&1; then
+        python3 "$INSTALL_PY" "${INSTALL_ARGS[@]}"
+        exit 0
+    else
+        log_warn "Python or install.py not found. Performing standalone service & file cleanup..."
+        systemctl stop iothubd.service 2>/dev/null || true
+        systemctl disable iothubd.service 2>/dev/null || true
+        rm -f /etc/systemd/system/iothubd.service
+        systemctl daemon-reload 2>/dev/null || true
+        rm -f /usr/local/bin/iothubctl
+        rm -rf /opt/iothub
+        userdel iothub 2>/dev/null || true
+        groupdel iothub 2>/dev/null || true
+        if [ "$PURGE" = true ]; then
+            rm -rf /etc/iothub /var/lib/iothub
+            log_ok "Purged /etc/iothub and /var/lib/iothub."
+        else
+            log_ok "Preserved /etc/iothub and /var/lib/iothub."
+        fi
+        log_ok "Uninstallation complete."
+        exit 0
+    fi
+fi
 
 # 3. Ensure System Dependencies (Python 3, python3-venv, sqlite3)
 log_info "Checking system runtime dependencies..."
@@ -122,9 +183,15 @@ else
     log_ok "All system prerequisite packages are present."
 fi
 
-# 4. Clone or update repository if --repo is specified
+# 4. Clone or update repository if --repo is specified, or default if running via curl
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="$SCRIPT_DIR"
+
+DEFAULT_REPO="https://github.com/VinujaRnR/RnR_iot_hub.git"
+if [ -z "$REPO_URL" ] && [ ! -f "$SCRIPT_DIR/install.py" ]; then
+    REPO_URL="$DEFAULT_REPO"
+    log_info "No local installer found in $SCRIPT_DIR. Defaulting to official repository: $REPO_URL"
+fi
 
 if [ -n "$REPO_URL" ]; then
     TARGET_SRC="/tmp/iothub_install_src"

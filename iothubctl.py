@@ -511,7 +511,98 @@ def build_parser() -> argparse.ArgumentParser:
     res_p = bak_subs.add_parser("restore", help="Restore from backup")
     res_p.add_argument("path", help="Path to backup database")
 
+    # uninstall
+    uninst_p = subparsers.add_parser("uninstall", help="Uninstall iothubd service and application")
+    uninst_p.add_argument("--purge", action="store_true", help="Permanently delete databases, encryption keys, and configuration (/var/lib/iothub, /etc/iothub)")
+    uninst_p.add_argument("-y", "--yes", action="store_true", help="Assume yes to confirmation prompts without prompting interactively")
+
+    # update
+    upd_p = subparsers.add_parser("update", help="Update iothubd from Git repository and restart service")
+    upd_p.add_argument("--repo", default="https://github.com/VinujaRnR/RnR_iot_hub.git", help="Git repository URL")
+    upd_p.add_argument("--ref", default="main", help="Git branch or tag to update to (default: main)")
+
     return parser
+
+
+# =====================================================================
+# Command: iothubctl update
+# =====================================================================
+async def cmd_update(args: argparse.Namespace) -> int:
+    if os.geteuid() != 0:
+        print(f"\n{RED}Error: 'iothubctl update' requires root privileges.{RESET}")
+        print(f"Please run with sudo: {BOLD}sudo iothubctl update{RESET}\n")
+        return 1
+
+    repo = getattr(args, "repo", None) or "https://github.com/VinujaRnR/RnR_iot_hub.git"
+    ref = getattr(args, "ref", None) or "main"
+    stage_dir = Path("/tmp/iothub_update_staging")
+
+    print(f"\n{BOLD}{CYAN}========================================================================{RESET}")
+    print(f"{BOLD}{CYAN} RnR Linux IoT Hub — Application Software Update                        {RESET}")
+    print(f"{BOLD}{CYAN} Repository: {repo} (ref: {ref})                                       {RESET}")
+    print(f"{BOLD}{CYAN}========================================================================{RESET}\n")
+
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir, ignore_errors=True)
+
+    print(f" {CYAN}==>{RESET} Downloading update from {repo} ({ref})...")
+    res = subprocess.run(
+        ["git", "clone", "--depth", "1", "--branch", ref, repo, str(stage_dir)],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        print(f" {RED}[✗]{RESET} Failed to clone release: {res.stderr.strip()}")
+        return 1
+    print(f" {GREEN}[✓]{RESET} Downloaded release package.")
+
+    # Create pre-update backup of database
+    print(f" {CYAN}==>{RESET} Creating pre-update safety backup...")
+    try:
+        from storage.backup_manager import BackupManager
+        db_path = "/var/lib/iothub/iothub.db"
+        if os.path.exists(db_path):
+            bm = BackupManager(db_path=db_path)
+            bak = await bm.create_backup()
+            print(f" {GREEN}[✓]{RESET} Created pre-update backup: {bak.backup_path}")
+    except Exception as exc:
+        print(f" {YELLOW}[!]{RESET} Pre-update backup warning: {exc}")
+
+    # Invoke install.py in staging directory
+    print(f" {CYAN}==>{RESET} Deploying application update...")
+    inst_py = stage_dir / "install.py"
+    if not inst_py.exists():
+        print(f" {RED}[✗]{RESET} Invalid release package: install.py missing.")
+        return 1
+
+    res = subprocess.run([sys.executable, str(inst_py)], capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f" {RED}[✗]{RESET} Update failed: {res.stderr.strip()}")
+        return 1
+
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir, ignore_errors=True)
+
+    print(f"\n{BOLD}{GREEN}========================================================================{RESET}")
+    print(f"{BOLD}{GREEN} Update completed successfully! Service is active and running.          {RESET}")
+    print(f"{BOLD}{GREEN} Run diagnostics: sudo iothubctl doctor                                 {RESET}")
+    print(f"{BOLD}{GREEN}========================================================================{RESET}\n")
+    return 0
+
+
+# =====================================================================
+# Command: iothubctl uninstall
+# =====================================================================
+async def cmd_uninstall(args: argparse.Namespace) -> int:
+    if os.geteuid() != 0:
+        print(f"\n{RED}Error: 'iothubctl uninstall' requires root privileges.{RESET}")
+        print(f"Please run with sudo: {BOLD}sudo iothubctl uninstall{' --purge' if getattr(args, 'purge', False) else ''}{RESET}\n")
+        return 1
+
+    from install import IoTInstaller
+    installer = IoTInstaller()
+    installer.uninstall(purge=getattr(args, "purge", False), yes=getattr(args, "yes", False))
+    return 0
 
 
 def main():
@@ -525,6 +616,8 @@ def main():
         "devices": cmd_devices,
         "profiles": cmd_profiles,
         "backup": cmd_backup,
+        "uninstall": cmd_uninstall,
+        "update": cmd_update,
     }
 
     handler = handlers.get(args.command)

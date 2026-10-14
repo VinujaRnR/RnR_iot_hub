@@ -103,6 +103,8 @@ SOURCE_CORE_FILES = [
     "config.py",
     "requirements.txt",
     "iothubctl.py",
+    "install.py",
+    "uninstall.sh",
 ]
 
 
@@ -323,7 +325,10 @@ class IoTInstaller:
                     for f in files:
                         p = Path(root) / f
                         os.chown(p, uid, gid)
-                        os.chmod(p, 0o644)
+                        if p.name in ("iothubctl", "arduino-cli") or p.suffix == ".sh" or "bin" in str(p):
+                            os.chmod(p, 0o755)
+                        else:
+                            os.chmod(p, 0o644)
                 log_ok("Applied permissions to application tree (0755/0644).")
             except Exception as exc:
                 log_warn(f"Could not set file permissions: {exc}")
@@ -567,10 +572,146 @@ class IoTInstaller:
         print(f"{BOLD}{GREEN} View Logs     : sudo journalctl -u iothubd.service -f                  {RESET}")
         print(f"{BOLD}{GREEN}========================================================================{RESET}\n")
 
+    def uninstall(self, purge: bool = False, yes: bool = False):
+        """Uninstalls iothubd service, removes application files, and optionally purges data."""
+        print(f"{BOLD}========================================================================{RESET}")
+        print(f"{BOLD} RnR Linux IoT Scheduling Hub - Uninstallation Manager                  {RESET}")
+        print(f"{BOLD} Mode: {'PURGE (Remove All Files & Databases)' if purge else 'STANDARD (Preserve Configuration & Databases)'}{RESET}")
+        print(f"{BOLD}========================================================================{RESET}")
+
+        if not self.destdir and not self.dry_run:
+            if os.geteuid() != 0:
+                log_fail("Root privileges are required to uninstall system services.")
+                print(f"{YELLOW}Please run with sudo:{RESET} sudo python3 install.py --uninstall\n")
+                raise SystemExit(1)
+
+        # 1. Stop and disable systemd service
+        if not self.destdir and not self.dry_run:
+            log_step("Stopping and disabling systemd service")
+            try:
+                self.run_cmd(["systemctl", "stop", "iothubd.service"], check=False)
+                log_ok("Stopped iothubd.service.")
+            except Exception as exc:
+                log_warn(f"Could not stop service: {exc}")
+
+            try:
+                self.run_cmd(["systemctl", "disable", "iothubd.service"], check=False)
+                log_ok("Disabled iothubd.service.")
+            except Exception as exc:
+                log_warn(f"Could not disable service: {exc}")
+        elif self.dry_run:
+            log_ok("[DRY-RUN] Would stop and disable iothubd.service.")
+
+        # 2. Remove systemd unit file
+        log_step(f"Removing systemd unit file: {self.service_path}")
+        if self.service_path.exists():
+            if not self.dry_run:
+                try:
+                    self.service_path.unlink()
+                    log_ok(f"Removed systemd unit: {self.service_path}")
+                except Exception as exc:
+                    log_warn(f"Failed to remove {self.service_path}: {exc}")
+            else:
+                log_ok(f"[DRY-RUN] Would remove systemd unit: {self.service_path}")
+        else:
+            log_ok(f"Systemd unit {self.service_path} not present.")
+
+        if not self.destdir and not self.dry_run:
+            try:
+                self.run_cmd(["systemctl", "daemon-reload"], check=False)
+                self.run_cmd(["systemctl", "reset-failed"], check=False)
+                log_ok("Executed 'systemctl daemon-reload' and 'systemctl reset-failed'.")
+            except Exception:
+                pass
+
+        # 3. Remove global CLI symlink
+        if not self.destdir:
+            cli_dst = Path("/usr/local/bin/iothubctl")
+            if cli_dst.exists() or cli_dst.is_symlink():
+                if not self.dry_run:
+                    try:
+                        cli_dst.unlink()
+                        log_ok(f"Removed global CLI symlink: {cli_dst}")
+                    except Exception as exc:
+                        log_warn(f"Could not remove {cli_dst}: {exc}")
+                else:
+                    log_ok(f"[DRY-RUN] Would remove global CLI symlink: {cli_dst}")
+
+        # 4. Remove application directory (/opt/iothub)
+        log_step(f"Removing application directory: {self.opt_dir}")
+        if self.opt_dir.exists():
+            if not self.dry_run:
+                try:
+                    shutil.rmtree(self.opt_dir)
+                    log_ok(f"Removed application directory: {self.opt_dir}")
+                except Exception as exc:
+                    log_warn(f"Failed to remove {self.opt_dir}: {exc}")
+            else:
+                log_ok(f"[DRY-RUN] Would remove application directory: {self.opt_dir}")
+        else:
+            log_ok(f"Application directory {self.opt_dir} not present.")
+
+        # 5. Remove service user and group (only in live non-destdir mode)
+        if not self.destdir and not self.dry_run:
+            log_step("Removing service user and group 'iothub'")
+            try:
+                pwd.getpwnam("iothub")
+                self.run_cmd(["userdel", "iothub"], check=False)
+                log_ok("Removed system user 'iothub'.")
+            except KeyError:
+                log_ok("System user 'iothub' does not exist.")
+            except Exception as exc:
+                log_warn(f"Could not remove user 'iothub': {exc}")
+
+            try:
+                grp.getgrnam("iothub")
+                self.run_cmd(["groupdel", "iothub"], check=False)
+                log_ok("Removed system group 'iothub'.")
+            except KeyError:
+                log_ok("System group 'iothub' does not exist.")
+            except Exception as exc:
+                log_warn(f"Could not remove group 'iothub': {exc}")
+
+        # 6. Purge configuration and data if requested
+        if purge:
+            if not yes and not self.dry_run and sys.stdin.isatty():
+                print(f"\n{BOLD}{RED}WARNING: Purge mode will permanently delete:{RESET}")
+                print(f"  • Configuration & master key: {self.etc_dir}")
+                print(f"  • SQLite database & backups:  {self.var_dir}")
+                confirm = input(f"{BOLD}Are you sure you want to proceed? [y/N]: {RESET}").strip().lower()
+                if confirm not in ("y", "yes"):
+                    log_warn("Purge aborted by user. Preserving configuration and databases.")
+                    purge = False
+
+            if purge:
+                log_step("Purging configuration, master encryption key, and databases")
+                for d in [self.etc_dir, self.var_dir]:
+                    if d.exists():
+                        if not self.dry_run:
+                            try:
+                                shutil.rmtree(d)
+                                log_ok(f"Purged: {d}")
+                            except Exception as exc:
+                                log_warn(f"Failed to purge {d}: {exc}")
+                        else:
+                            log_ok(f"[DRY-RUN] Would purge: {d}")
+
+        if not purge:
+            print(f"\n{BOLD}{YELLOW}------------------------------------------------------------------------{RESET}")
+            print(f"{BOLD}{YELLOW} NOTICE: Configuration and databases have been preserved:               {RESET}")
+            print(f"   • Configuration: {self.etc_dir}")
+            print(f"   • Storage/DB   : {self.var_dir}")
+            print(f" To completely delete all data and keys, run: sudo python3 install.py --uninstall --purge")
+            print(f"{BOLD}{YELLOW}------------------------------------------------------------------------{RESET}")
+
+        print(f"\n{BOLD}{GREEN}========================================================================{RESET}")
+        print(f"{BOLD}{GREEN} iothubd has been successfully uninstalled.                             {RESET}")
+        print(f"{BOLD}{GREEN}========================================================================{RESET}\n")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Automatic Ubuntu Installer for RnR Linux IoT Hub (Step 17 & Customizations)",
+        description="Automatic Ubuntu Installer & Uninstaller for RnR Linux IoT Hub (Step 17 & Customizations)",
     )
     parser.add_argument(
         "--destdir",
@@ -597,6 +738,21 @@ def parse_args():
         action="store_true",
         help="Simulate operations without making filesystem or system changes",
     )
+    parser.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Uninstall iothubd service, global CLI symlink, and application files",
+    )
+    parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="In uninstallation mode, also permanently remove configuration, master keys, and databases (/etc/iothub, /var/lib/iothub)",
+    )
+    parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Assume yes to confirmation prompts without prompting interactively",
+    )
     return parser.parse_args()
 
 
@@ -609,7 +765,10 @@ def main():
         dry_run=args.dry_run,
         wizard=args.wizard,
     )
-    installer.execute_all()
+    if args.uninstall:
+        installer.uninstall(purge=args.purge, yes=args.yes)
+    else:
+        installer.execute_all()
 
 
 if __name__ == "__main__":

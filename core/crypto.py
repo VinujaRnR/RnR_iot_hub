@@ -251,7 +251,10 @@ class CryptoManager:
 
         # 3. Standard production location
         prod_path = Path("/etc/iothub/keys/master.key")
-        if prod_path.exists():
+        try:
+            if prod_path.exists():
+                return prod_path
+        except (PermissionError, OSError):
             return prod_path
 
         # 4. Project local fallback for development / test environments
@@ -263,8 +266,16 @@ class CryptoManager:
         if self._master_key:
             return self._master_key
 
-        if self.key_path.exists():
-            key = self.key_path.read_bytes().strip()
+        try:
+            key_exists = self.key_path.exists()
+        except PermissionError:
+            raise CryptoError(f"Permission denied accessing master key at {self.key_path}. Please run with sudo.")
+
+        if key_exists:
+            try:
+                key = self.key_path.read_bytes().strip()
+            except PermissionError:
+                raise CryptoError(f"Permission denied reading master key at {self.key_path}. Please run with sudo.")
             if len(key) == 32:
                 self._master_key = key
                 return self._master_key
