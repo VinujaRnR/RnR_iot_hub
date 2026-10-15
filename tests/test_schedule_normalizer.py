@@ -116,7 +116,7 @@ def test_sample_produces_16_unique_executable_actions(sample_production_schedule
         assert r.channel_key == "relay:light"
         assert r.stage_id == 30
         assert r.status == "PENDING"
-        assert r.params == {}
+        assert not hasattr(r, "params")
 
     # Verify matching record for 09:56:00
     action_0956 = next(r for r in records if "09:56:00" in r.scheduled_at)

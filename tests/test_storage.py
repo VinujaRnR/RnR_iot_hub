@@ -82,7 +82,10 @@ async def test_save_schedule_restart_python_and_retrieve_actions(temp_db_file):
             scheduled_at="2026-10-09T08:00:00+05:30",
             action="LIGHTS_ON",
             channel_key="relay:light",
-            params={"level": 100},
+            device_id="light_glow_1",
+            device_type="light_glow",
+            device_number=1,
+            device_name="light_glow #1",
             status="PENDING",
         ),
         NormalizedActionRecord(
@@ -153,7 +156,12 @@ async def test_save_schedule_restart_python_and_retrieve_actions(temp_db_file):
     assert act1["scheduled_at"] == "2026-10-09T08:00:00+05:30"
     assert act1["action"] == "LIGHTS_ON"
     assert act1["channel_key"] == "relay:light"
-    assert act1["params"] == {"level": 100}
+    assert act1["device_id"] == "light_glow_1"
+    assert act1["device_type"] == "light_glow"
+    assert act1["device_number"] == 1
+    assert act1["device_name"] == "light_glow #1"
+    # params are not stored; they are derived for the command JSON only
+    assert act1["params"] == {"device_type": "light_glow", "device_number": 1}
     assert act1["status"] == "PENDING"
 
     act2 = retrieved_actions[1]

@@ -54,7 +54,10 @@ class NormalizedActionRecord(BaseModel):
     scheduled_at: str = Field(..., description="Full ISO 8601 execution timestamp (e.g. 2026-10-09T09:56:00+05:30)")
     action: str = Field(..., description="Device operation (e.g. LIGHTS_ON, LIGHTS_OFF)")
     channel_key: str = Field(..., description="Device channel/relay (e.g. relay:light)")
-    params: Dict[str, Any] = Field(default_factory=dict, description="Action parameters")
+    device_id: Optional[str] = Field(default=None, description="Assigned device (e.g. light_glow_1)")
+    device_type: Optional[str] = Field(default=None, description="Assigned device type (e.g. light_glow)")
+    device_number: Optional[int] = Field(default=None, description="Assigned device number (e.g. 1)")
+    device_name: Optional[str] = Field(default=None, description="Assigned device display name")
     status: str = Field(default="PENDING", description="Execution status")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -204,11 +207,16 @@ class ScheduleNormalizer:
                     or act.get("command_id")
                     or f"action-{action_counter:03d}"
                 )
-                params = act.get("params") or act.get("parameters") or {}
+                legacy_params = act.get("params") or act.get("parameters") or {}
+                if not isinstance(legacy_params, dict):
+                    legacy_params = {}
+                dev_id = act.get("device_id") or legacy_params.get("device")
+                dev_type = act.get("device_type") or legacy_params.get("device_type")
+                dev_num = act.get("device_number", legacy_params.get("device_number"))
+                dev_name = act.get("device_name")
                 node_id = (
-                    (params.get("device") if isinstance(params, dict) else None)
+                    dev_id
                     or act.get("iot_node_id")
-                    or act.get("device_id")
                     or sub_node_id
                     or "unknown"
                 )
@@ -231,7 +239,10 @@ class ScheduleNormalizer:
                     scheduled_at=iso_timestamp,
                     action=str(action_name),
                     channel_key=str(channel_key),
-                    params=params,
+                    device_id=str(dev_id) if dev_id is not None else None,
+                    device_type=str(dev_type) if dev_type is not None else None,
+                    device_number=int(dev_num) if dev_num is not None and str(dev_num).lstrip('-').isdigit() else None,
+                    device_name=str(dev_name) if dev_name is not None else None,
                     status="PENDING",
                 )
                 records.append(record)
@@ -308,7 +319,10 @@ class ScheduleNormalizer:
                         scheduled_at=iso_timestamp,
                         action=str(sched_entry.get("action")),
                         channel_key=str(sched_entry.get("channel_key", "default")),
-                        params=flat_params,
+                        device_id=str(sched_entry.get("device_id")) if sched_entry.get("device_id") else None,
+                        device_type=sched_entry.get("device_type"),
+                        device_number=sched_entry.get("device_number"),
+                        device_name=sched_entry.get("device_name"),
                         status="PENDING",
                     )
                 )
@@ -340,8 +354,11 @@ class ScheduleNormalizer:
 
             # Check if all actions in group are identical (duplicates)
             first_action = group[0].action
-            first_params = group[0].params
-            is_identical = all(g.action == first_action and g.params == first_params for g in group)
+            first_params = (group[0].device_id, group[0].device_type, group[0].device_number)
+            is_identical = all(
+                g.action == first_action and (g.device_id, g.device_type, g.device_number) == first_params
+                for g in group
+            )
 
             if is_identical:
                 # Deduplicate: keep one unique action

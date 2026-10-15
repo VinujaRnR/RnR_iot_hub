@@ -155,16 +155,21 @@ class ActionDispatcher:
         params = action.get("params") or action.get("parameters") or {}
         channel_key = action.get("channel_key", "relay:light")
 
-        target_name = None
-        if isinstance(params, dict):
+        target_name = action.get("device_id")
+        if not target_name and isinstance(params, dict):
             target_name = params.get("device")
         if not target_name:
             target_name = device_id
 
-        params_to_dispatch = dict(params) if isinstance(params, dict) else {}
-        if "target_device" not in params_to_dispatch:
-            params_to_dispatch["target_device"] = target_name
-        params_to_dispatch["params"] = params if isinstance(params, dict) else {}
+        # Command params are built here from the device columns, never read from the DB
+        cmd_params: Dict[str, Any] = dict(params) if isinstance(params, dict) else {}
+        if action.get("device_type") is not None:
+            cmd_params["device_type"] = action["device_type"]
+        if action.get("device_number") is not None:
+            cmd_params["device_number"] = action["device_number"]
+        cmd_params.pop("device", None)
+
+        params_to_dispatch: Dict[str, Any] = {"target_device": target_name, "params": cmd_params}
 
         logger.info(
             ">>> [DISPATCH] Executing '%s' on device '%s' (target: %s, Action ID: %s)",
