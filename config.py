@@ -88,9 +88,9 @@ class Settings(BaseSettings):
     # ==========================================
     # RabbitMQ Topology Configuration
     # ==========================================
-    RABBITMQ_COMMAND_EXCHANGE: str = Field(default="iot.commands", description="Exchange for command/schedule routing")
-    RABBITMQ_COMMAND_QUEUE: Optional[str] = Field(default=None, description="Inbound hub command queue")
-    RABBITMQ_COMMAND_ROUTING_KEY: Optional[str] = Field(default=None, description="Inbound routing key")
+    RABBITMQ_COMMAND_EXCHANGE: str = Field(default="iot_commands", description="Exchange for command/schedule routing")
+    RABBITMQ_COMMAND_QUEUE: Optional[str] = Field(default="iot_exchange", description="Inbound hub command queue")
+    RABBITMQ_COMMAND_ROUTING_KEY: Optional[str] = Field(default="iot.command", description="Inbound routing key")
     RABBITMQ_RESULTS_EXCHANGE: str = Field(default="iot.events", description="Exchange for publishing events/results")
     RABBITMQ_DEADLETTER_EXCHANGE: str = Field(default="iot.deadletter", description="Dead-letter exchange for unprocessable messages")
 
@@ -147,13 +147,13 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def compute_defaults_and_url(self) -> Settings:
         """Computes RabbitMQ URL and default queue name if not explicitly set."""
-        # Set default queue name based on HUB_ID if not given
+        # Set default queue name based on HUB_ID or fallback to iot_exchange
         if not self.RABBITMQ_COMMAND_QUEUE:
-            self.RABBITMQ_COMMAND_QUEUE = f"iot.hub.{self.HUB_ID}.commands"
+            self.RABBITMQ_COMMAND_QUEUE = "iot_exchange"
 
-        # Set default routing key based on HUB_ID if not given
+        # Set default routing key fallback to iot.command
         if not self.RABBITMQ_COMMAND_ROUTING_KEY:
-            self.RABBITMQ_COMMAND_ROUTING_KEY = f"hub.{self.HUB_ID}"
+            self.RABBITMQ_COMMAND_ROUTING_KEY = "iot.command"
 
         # Compute RABBITMQ_URL if not provided
         if not self.RABBITMQ_URL or not self.RABBITMQ_URL.strip():

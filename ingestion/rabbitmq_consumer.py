@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, TYPE_CHECKING
 import aio_pika
 
@@ -175,12 +177,21 @@ class RabbitMQConsumer:
                 raise
 
         # Bind to command routing keys:
-        # e.g. "hub.hub-01", "hub.hub-01.#", "iot.command"
-        await queue.bind(exchange, routing_key=self.routing_key)
-        if not self.routing_key.endswith("#"):
-            await queue.bind(exchange, routing_key=f"{self.routing_key}.#")
-        # Also bind to legacy iot.command for backward compatibility
-        await queue.bind(exchange, routing_key="iot.command")
+        # e.g. "hub.hub-01", "hub.hub-01.#", "iot.command", "iot.command.#"
+        bindings_to_add = [
+            self.routing_key,
+            f"{self.routing_key}.#" if not self.routing_key.endswith("#") else None,
+            "iot.command",
+            "iot.command.#",
+            f"hub.{self.hub_id}",
+            f"hub.{self.hub_id}.#",
+            f"hub.{self.hub_id}.commands",
+        ]
+        for rk in set(filter(None, bindings_to_add)):
+            try:
+                await queue.bind(exchange, routing_key=rk)
+            except Exception as bind_err:
+                logger.debug("Binding notice for '%s': %s", rk, bind_err)
 
         logger.info(
             "Topology declared: Queue '%s' bound to Exchange '%s' (Routing key: '%s'). Dead-letter: '%s'",
@@ -254,7 +265,6 @@ class RabbitMQConsumer:
 
         # Persist last inbound message for inspection via iothubctl rabbitmq last
         try:
-            from datetime import timezone
             meta = {
                 "received_at": datetime.now(timezone.utc).isoformat(),
                 "routing_key": rk,
@@ -266,13 +276,17 @@ class RabbitMQConsumer:
             for path in ("/var/lib/iothub/last_rabbitmq_message.json", "/tmp/last_rabbitmq_message.json"):
                 try:
                     os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path, "w") as f:
+                    with open(path, "w", encoding="utf-8") as f:
                         f.write(meta_json)
+                    try:
+                        os.chmod(path, 0o666)
+                    except Exception:
+                        pass
                     break
                 except Exception:
                     continue
         except Exception as exc:
-            logger.debug("Could not record last RabbitMQ message: %s", exc)
+            logger.warning("Could not record last RabbitMQ message: %s", exc)
 
         if is_schedule:
             await self._process_schedule_document(message, payload, raw_body)
