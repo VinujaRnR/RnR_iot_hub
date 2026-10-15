@@ -29,6 +29,7 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+import zoneinfo
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -49,6 +50,7 @@ from config import (
     API_PORT,
     COMMAND_EXCHANGE,
     COMMAND_ROUTING_KEY,
+    SCHEDULE_TIMEZONE,
 )
 from storage.database import DatabaseManager
 from storage.config_repository import ConfigRepository
@@ -999,6 +1001,149 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
             print()
             return 0
 
+        elif sub == "watch":
+            interval = int(getattr(args, "interval", 60) or 60)
+            target_dev_filter = getattr(args, "target", None)
+            run_once = getattr(args, "once", False)
+            sched_id = args.schedule_id
+
+            print(f"\n{BOLD}{CYAN}======================================================================{RESET}")
+            print(f"{BOLD}{CYAN}  RnR IoT Hub: Automated Schedule Watcher & State Change Tracker     {RESET}")
+            print(f"{BOLD}{CYAN}======================================================================{RESET}")
+            print(f"  {BOLD}Checking Interval:{RESET} Every {interval}s")
+            print(f"  {BOLD}Target Device:{RESET}     {target_dev_filter or 'All Scheduled Devices'}")
+            print(f"  {BOLD}Timezone:{RESET}          {SCHEDULE_TIMEZONE}")
+            print(f"  {DIM}Press Ctrl+C to stop watching.{RESET}\n")
+
+            last_known_states: Dict[str, str] = {}
+
+            def _action_to_state(act: str) -> str:
+                act_u = act.strip().upper()
+                if act_u in ("LIGHTS_ON", "LIGHT_ON", "ON"):
+                    return "ON"
+                if act_u in ("LIGHTS_OFF", "LIGHT_OFF", "OFF"):
+                    return "OFF"
+                if act_u in ("VALVE_ON", "VALVE_OPEN", "OPEN"):
+                    return "OPEN"
+                if act_u in ("VALVE_OFF", "VALVE_CLOSE", "CLOSE"):
+                    return "CLOSED"
+                return act_u
+
+            tz = zoneinfo.ZoneInfo(SCHEDULE_TIMEZONE)
+
+            try:
+                while True:
+                    now_dt = datetime.now(tz)
+                    now_hm = now_dt.strftime("%H:%M")
+                    now_sec = now_dt.strftime("%H:%M:%S")
+
+                    # 1. Fetch active schedule from DB
+                    active_sched_id = sched_id
+                    if not active_sched_id:
+                        schedules = await repo.list_schedules(status="ACTIVE")
+                        if not schedules:
+                            schedules = await repo.list_schedules()
+                        if schedules:
+                            active_sched_id = schedules[0]["schedule_id"]
+
+                    actions = []
+                    if active_sched_id:
+                        actions = await repo.get_scheduled_actions(active_sched_id)
+
+                    # Fallback to schedule.json if DB has no actions
+                    if not actions and Path("schedule.json").exists():
+                        try:
+                            raw = json.loads(Path("schedule.json").read_text(encoding="utf-8"))
+                            from ingestion.schedule_normalizer import ScheduleNormalizer
+                            norm = ScheduleNormalizer()
+                            actions = [a.to_dict() for a in norm.normalize(raw)]
+                        except Exception:
+                            pass
+
+                    if not actions:
+                        print(f"[{now_sec}] {YELLOW}No schedule or actions available. Retrying in {interval}s...{RESET}")
+                        if run_once:
+                            return 0
+                        await asyncio.sleep(interval)
+                        continue
+
+                    # Filter target if specified
+                    if target_dev_filter:
+                        dev_actions = [a for a in actions if (a.get("device_id") == target_dev_filter or a.get("iot_node_id") == target_dev_filter)]
+                    else:
+                        dev_actions = actions
+
+                    if not dev_actions:
+                        print(f"[{now_sec}] {YELLOW}No actions for target '{target_dev_filter}'. Retrying in {interval}s...{RESET}")
+                        if run_once:
+                            return 0
+                        await asyncio.sleep(interval)
+                        continue
+
+                    # 2. Segregate actions by time
+                    past_or_current = []
+                    future_actions = []
+
+                    for a in dev_actions:
+                        sched_at = a.get("scheduled_at", "")
+                        if "T" in sched_at:
+                            t_part = sched_at.split("T")[1][:5]
+                            if t_part <= now_hm:
+                                past_or_current.append(a)
+                            else:
+                                future_actions.append(a)
+
+                    current_action = past_or_current[-1] if past_or_current else dev_actions[0]
+                    next_action = future_actions[0] if future_actions else None
+
+                    dev_key = current_action.get("device_id") or current_action.get("iot_node_id") or "light_glow_1"
+                    action_name = current_action.get("action", "LIGHT_ON")
+                    desired_state = _action_to_state(action_name)
+                    prev_state = last_known_states.get(dev_key)
+
+                    next_info = "None (End of schedule)"
+                    if next_action:
+                        next_time = next_action.get("scheduled_at", "").split("T")[1][:5]
+                        next_act = next_action.get("action")
+                        next_info = f"{next_act} at {next_time}"
+
+                    print(f"[{BOLD}{now_sec}{RESET}] Schedule: {BOLD}{active_sched_id or 'schedule.json'}{RESET}")
+                    print(f"  Device: {GREEN}{dev_key}{RESET} | Current Time Slot: {BOLD}{now_hm}{RESET} | Desired Action: {BOLD}{action_name}{RESET} (State: {desired_state})")
+
+                    # 3. Check if Action State CHANGED!
+                    if prev_state != desired_state:
+                        print(f"  {YELLOW}==> [STATE CHANGE DETECTED]{RESET} {prev_state or 'INITIAL/UNKNOWN'} -> {BOLD}{GREEN}{desired_state}{RESET}")
+                        p = current_action.get("params") or {}
+                        cmd_payload = {"action": action_name}
+                        if p:
+                            cmd_payload["params"] = p
+
+                        print(f"  {BOLD}Transmitting Command Payload JSON to Target Device:{RESET}")
+                        print("  " + json.dumps(cmd_payload, indent=2).replace("\n", "\n  "))
+
+                        try:
+                            res = await _transmit_command(dev_key, action_name, p)
+                            last_known_states[dev_key] = desired_state
+                            print(f"  {GREEN}[✓] Command Executed on Hardware! State is now: {desired_state}{RESET}")
+                            if res.get("port"):
+                                print(f"      Hardware Port: {res.get('port')} | Response: {res.get('state', 'OK')}")
+                        except Exception as exc:
+                            print(f"  {RED}[✗] Transmission error: {exc}{RESET}")
+                    else:
+                        print(f"  {DIM}[STATE UNCHANGED] Device is already in state '{desired_state}'. Skipping redundant transmission.{RESET}")
+
+                    print(f"  Next Scheduled Action: {CYAN}{next_info}{RESET}")
+                    print(f"  {DIM}Waiting {interval}s for next schedule check...{RESET}\n")
+
+                    if run_once:
+                        return 0
+
+                    await asyncio.sleep(interval)
+
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                print(f"\n{YELLOW}Schedule watch stopped by user.{RESET}\n")
+                return 0
+
         elif sub == "load":
             file_path = Path(args.file)
             if not file_path.exists():
@@ -1209,6 +1354,11 @@ def build_parser() -> argparse.ArgumentParser:
     disp_sched.add_argument("schedule_id", nargs="?", default=None, help="Schedule ID (defaults to active schedule)")
     disp_sched.add_argument("--time", "-t", default=None, help="Scheduled time of the action to dispatch (e.g. 15:50, 15.50-15.54, or now)")
     disp_sched.add_argument("--now", action="store_true", help="Dispatch the action scheduled for the current time or most recent before it")
+    watch_sched = sched_subs.add_parser("watch", help="Automatically check schedule every 60s and execute command JSON on state change")
+    watch_sched.add_argument("schedule_id", nargs="?", default=None, help="Schedule ID (defaults to active schedule)")
+    watch_sched.add_argument("--interval", "-i", type=int, default=60, help="Check interval in seconds (default: 60)")
+    watch_sched.add_argument("--target", default=None, help="Filter by target device ID (e.g. light_glow_1)")
+    watch_sched.add_argument("--once", action="store_true", help="Run a single check and exit immediately")
     load_sched = sched_subs.add_parser("load", help="Load and validate a local schedule JSON file")
     load_sched.add_argument("file", help="Path to schedule JSON file")
     pub_sched = sched_subs.add_parser("publish", help="Publish a schedule JSON file to RabbitMQ")

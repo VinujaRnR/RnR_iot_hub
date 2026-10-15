@@ -93,6 +93,7 @@ class ScheduleEngine:
         self._loop_task: Optional[asyncio.Task] = None
         self._wake_event = asyncio.Event()
         self._simulated_time: Optional[str] = None
+        self._last_device_states: Dict[str, str] = {}
 
     @property
     def is_running(self) -> bool:
@@ -169,10 +170,36 @@ class ScheduleEngine:
                 # 1. Atomically claim due actions in SQLite (prevents race conditions)
                 due_actions = await self.schedule_repo.claim_due_actions(now)
 
-                # 2. Queue claimed actions to per-device dispatcher
+                # 2. Queue claimed actions to per-device dispatcher on state change
                 if due_actions:
                     logger.info("Claimed %d due action(s) at UTC %s", len(due_actions), now)
                     for action in due_actions:
+                        dev_key = str(action.get("device_id") or action.get("iot_node_id") or "default")
+                        act_name = action.get("action", "").strip().upper()
+                        
+                        desired_st = None
+                        if act_name in ("LIGHTS_ON", "LIGHT_ON", "ON"):
+                            desired_st = "ON"
+                        elif act_name in ("LIGHTS_OFF", "LIGHT_OFF", "OFF"):
+                            desired_st = "OFF"
+                        elif act_name in ("VALVE_ON", "VALVE_OPEN", "OPEN"):
+                            desired_st = "OPEN"
+                        elif act_name in ("VALVE_OFF", "VALVE_CLOSE", "CLOSE"):
+                            desired_st = "CLOSED"
+
+                        prev_st = self._last_device_states.get(dev_key)
+                        if desired_st and prev_st == desired_st:
+                            logger.info(
+                                "[DEDUPLICATION] Action '%s' for '%s' matches current state '%s'. Suppressing redundant hardware actuation.",
+                                act_name,
+                                dev_key,
+                                desired_st,
+                            )
+                            continue
+
+                        if desired_st:
+                            self._last_device_states[dev_key] = desired_st
+
                         await self.dispatcher.queue_action(action)
 
                 # 3. Wait until next action is due or until schedule changes

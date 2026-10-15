@@ -89,10 +89,19 @@ void applyLightState(bool turn_on) {
   }
   digitalWrite(PIN_LIGHT, pin_level);
 
+  Serial.print(F("[DEBUG] Light -> "));
+  Serial.print(turn_on ? F("ON") : F("OFF"));
+  Serial.print(F(" (Pin "));
+  Serial.print(PIN_LIGHT);
+  Serial.print(F(" = "));
+  Serial.print(pin_level == LOW ? F("LOW") : F("HIGH"));
+  Serial.println(F(")"));
+
   // Persist state in EEPROM if changed
   if (EEPROM.read(EEPROM_LIGHT_ADDR) != (turn_on ? 1 : 0)) {
     EEPROM.write(EEPROM_LIGHT_ADDR, turn_on ? 1 : 0);
     EEPROM.commit();
+    Serial.println(F("[DEBUG] EEPROM Light state updated"));
   }
 }
 
@@ -106,18 +115,32 @@ void applyValveState(bool turn_on) {
   }
   digitalWrite(PIN_VALVE, pin_level);
 
+  Serial.print(F("[DEBUG] Valve -> "));
+  Serial.print(turn_on ? F("ON") : F("OFF"));
+  Serial.print(F(" (Pin "));
+  Serial.print(PIN_VALVE);
+  Serial.print(F(" = "));
+  Serial.print(pin_level == LOW ? F("LOW") : F("HIGH"));
+  Serial.println(F(")"));
+
   // Persist state in EEPROM if changed
   if (EEPROM.read(EEPROM_VALVE_ADDR) != (turn_on ? 1 : 0)) {
     EEPROM.write(EEPROM_VALVE_ADDR, turn_on ? 1 : 0);
     EEPROM.commit();
+    Serial.println(F("[DEBUG] EEPROM Valve state updated"));
   }
 }
 
 void initEEPROM() {
+  Serial.println(F("[DEBUG] Initializing EEPROM..."));
   EEPROM.begin(EEPROM_SIZE);
   byte magic = EEPROM.read(EEPROM_MAGIC_ADDR);
+  Serial.print(F("[DEBUG] Read EEPROM Magic: 0x"));
+  Serial.println(magic, HEX);
+
   if (magic != EEPROM_MAGIC_VAL) {
     // Uninitialized flash / first boot: set safe defaults (both OFF)
+    Serial.println(F("[DEBUG] EEPROM uninitialized, saving defaults (Light=OFF, Valve=OFF)..."));
     EEPROM.write(EEPROM_LIGHT_ADDR, 0);
     EEPROM.write(EEPROM_VALVE_ADDR, 0);
     EEPROM.write(EEPROM_MAGIC_ADDR, EEPROM_MAGIC_VAL);
@@ -127,10 +150,15 @@ void initEEPROM() {
   } else {
     g_light_state = (EEPROM.read(EEPROM_LIGHT_ADDR) == 1);
     g_valve_state = (EEPROM.read(EEPROM_VALVE_ADDR) == 1);
+    Serial.print(F("[DEBUG] EEPROM restored: Light="));
+    Serial.print(g_light_state ? F("ON") : F("OFF"));
+    Serial.print(F(", Valve="));
+    Serial.println(g_valve_state ? F("ON") : F("OFF"));
   }
 }
 
 void blinkDiagnostic() {
+  Serial.println(F("[DEBUG] Starting 5-blink diagnostic routine..."));
   for (int i = 0; i < 5; i++) {
     int on_level  = LIGHT_ACTIVE_LOW ? LOW : HIGH;
     int off_level = LIGHT_ACTIVE_LOW ? HIGH : LOW;
@@ -141,6 +169,7 @@ void blinkDiagnostic() {
   }
   // Restore saved light state
   applyLightState(g_light_state);
+  Serial.println(F("[DEBUG] Diagnostic blink complete, restored saved state."));
 }
 
 // =====================================================================
@@ -217,14 +246,20 @@ bool extractField(const char* json, const char* key, char* output, int max_len) 
 // Command Processor
 // =====================================================================
 void processBuffer(const char* line) {
+  Serial.print(F("[DEBUG] Received packet: \""));
+  Serial.print(line);
+  Serial.println(F("\""));
+
   // 1. Single-character & CLI commands for terminal debugging
   // Light controls
   if (strcmp(line, "1") == 0 || strcasecmp(line, "on") == 0 || strcasecmp(line, "light_on") == 0) {
+    Serial.println(F("[DEBUG] Command matched: LIGHTS_ON (CLI)"));
     applyLightState(true);
     Serial.println(F("OK:LIGHTS_ON"));
     return;
   }
   if (strcmp(line, "0") == 0 || strcasecmp(line, "off") == 0 || strcasecmp(line, "light_off") == 0) {
+    Serial.println(F("[DEBUG] Command matched: LIGHTS_OFF (CLI)"));
     applyLightState(false);
     Serial.println(F("OK:LIGHTS_OFF"));
     return;
@@ -232,11 +267,13 @@ void processBuffer(const char* line) {
 
   // Valve controls ('v' = Valve Open/ON, 'c' = Valve Close/OFF)
   if (strcasecmp(line, "v") == 0 || strcasecmp(line, "valve_on") == 0 || strcasecmp(line, "valve_open") == 0) {
+    Serial.println(F("[DEBUG] Command matched: VALVE_ON (CLI)"));
     applyValveState(true);
     Serial.println(F("OK:VALVE_ON"));
     return;
   }
   if (strcasecmp(line, "c") == 0 || strcasecmp(line, "valve_off") == 0 || strcasecmp(line, "valve_close") == 0) {
+    Serial.println(F("[DEBUG] Command matched: VALVE_OFF (CLI)"));
     applyValveState(false);
     Serial.println(F("OK:VALVE_OFF"));
     return;
@@ -244,6 +281,7 @@ void processBuffer(const char* line) {
 
   // Status query
   if (strcmp(line, "?") == 0 || strcasecmp(line, "status") == 0) {
+    Serial.println(F("[DEBUG] Command matched: STATUS query (CLI)"));
     Serial.print(F("STATE:LIGHT="));
     Serial.print(g_light_state ? F("ON") : F("OFF"));
     Serial.print(F(",VALVE="));
@@ -253,6 +291,7 @@ void processBuffer(const char* line) {
 
   // Diagnostic blink (built-in LED)
   if (strcasecmp(line, "b") == 0 || strcasecmp(line, "blink") == 0) {
+    Serial.println(F("[DEBUG] Command matched: BLINK (CLI)"));
     Serial.println(F("OK:BLINKING_5_TIMES"));
     blinkDiagnostic();
     Serial.println(F("OK:BLINK_COMPLETE"));
@@ -261,6 +300,7 @@ void processBuffer(const char* line) {
 
   // 2. Hello / Handshake
   if (strstr(line, "handshake") != NULL || strstr(line, "hello") != NULL || strstr(line, "HELLO") != NULL) {
+    Serial.println(F("[DEBUG] Handshake / Hello requested"));
     sendHello();
     return;
   }
@@ -285,8 +325,17 @@ void processBuffer(const char* line) {
 
   extractField(line, "channel", channel, sizeof(channel));
 
+  Serial.print(F("[DEBUG] Parsed JSON -> cmd_id: '"));
+  Serial.print(cmd_id);
+  Serial.print(F("', action: '"));
+  Serial.print(action);
+  Serial.print(F("', channel: '"));
+  Serial.print(channel);
+  Serial.println(F("'"));
+
   // Duplicate command suppression: if same command_id received, ack immediately
   if (cmd_id[0] != '\0' && strcmp(cmd_id, g_last_cmd_id) == 0) {
+    Serial.println(F("[DEBUG] Duplicate command ID detected - sending fast ACK"));
     sendResult(cmd_id, "SUCCESS", action);
     return;
   }
@@ -294,6 +343,7 @@ void processBuffer(const char* line) {
   // Action: Light Control
   if (strcasecmp(action, "LIGHTS_ON") == 0 || strcasecmp(action, "LIGHT_ON") == 0 ||
       (strcasecmp(action, "ON") == 0 && (strcmp(channel, "") == 0 || strcasecmp(channel, CHANNEL_LIGHT) == 0 || strcasecmp(channel, "light") == 0))) {
+    Serial.println(F("[DEBUG] Executing action: LIGHTS_ON"));
     applyLightState(true);
     strncpy(g_last_cmd_id, cmd_id, sizeof(g_last_cmd_id) - 1);
     sendResult(cmd_id, "SUCCESS", "LIGHTS_ON");
@@ -301,6 +351,7 @@ void processBuffer(const char* line) {
 
   } else if (strcasecmp(action, "LIGHTS_OFF") == 0 || strcasecmp(action, "LIGHT_OFF") == 0 ||
              (strcasecmp(action, "OFF") == 0 && (strcmp(channel, "") == 0 || strcasecmp(channel, CHANNEL_LIGHT) == 0 || strcasecmp(channel, "light") == 0))) {
+    Serial.println(F("[DEBUG] Executing action: LIGHTS_OFF"));
     applyLightState(false);
     strncpy(g_last_cmd_id, cmd_id, sizeof(g_last_cmd_id) - 1);
     sendResult(cmd_id, "SUCCESS", "LIGHTS_OFF");
@@ -309,6 +360,7 @@ void processBuffer(const char* line) {
   // Action: Valve Control
   } else if (strcasecmp(action, "VALVE_ON") == 0 || strcasecmp(action, "VALVE_OPEN") == 0 ||
              (strcasecmp(action, "ON") == 0 && (strcasecmp(channel, CHANNEL_VALVE) == 0 || strcasecmp(channel, "valve") == 0))) {
+    Serial.println(F("[DEBUG] Executing action: VALVE_ON"));
     applyValveState(true);
     strncpy(g_last_cmd_id, cmd_id, sizeof(g_last_cmd_id) - 1);
     sendResult(cmd_id, "SUCCESS", "VALVE_ON");
@@ -316,6 +368,7 @@ void processBuffer(const char* line) {
 
   } else if (strcasecmp(action, "VALVE_OFF") == 0 || strcasecmp(action, "VALVE_CLOSE") == 0 ||
              (strcasecmp(action, "OFF") == 0 && (strcasecmp(channel, CHANNEL_VALVE) == 0 || strcasecmp(channel, "valve") == 0))) {
+    Serial.println(F("[DEBUG] Executing action: VALVE_OFF"));
     applyValveState(false);
     strncpy(g_last_cmd_id, cmd_id, sizeof(g_last_cmd_id) - 1);
     sendResult(cmd_id, "SUCCESS", "VALVE_OFF");
@@ -323,9 +376,13 @@ void processBuffer(const char* line) {
 
   // Action: Status Query
   } else if (strcasecmp(action, "STATUS") == 0) {
+    Serial.println(F("[DEBUG] Executing action: STATUS query"));
     sendResult(cmd_id, "SUCCESS", "STATUS");
 
   } else {
+    Serial.print(F("[DEBUG] Unrecognized action: '"));
+    Serial.print(action);
+    Serial.println(F("' - reporting FAILED"));
     sendResult(cmd_id, "FAILED", action);
   }
 }
@@ -334,6 +391,22 @@ void processBuffer(const char* line) {
 // Arduino Setup & Loop
 // =====================================================================
 void setup() {
+  Serial.begin(9600);
+  delay(150);
+
+  Serial.println();
+  Serial.println(F("========================================"));
+  Serial.println(F("[DEBUG] RnR IoT Hub - ESP8266 D1 Firmware"));
+  Serial.print(F("[DEBUG] Board Model: ")); Serial.println(BOARD_TYPE);
+  Serial.print(F("[DEBUG] Hardware ID (Node): ")); Serial.println(NODE_ID);
+  Serial.print(F("[DEBUG] Firmware Version: ")); Serial.println(FIRMWARE_VER);
+  Serial.print(F("[DEBUG] Light Pin: ")); Serial.print(PIN_LIGHT);
+  Serial.print(F(" (Active-")); Serial.print(LIGHT_ACTIVE_LOW ? F("LOW") : F("HIGH"));
+  Serial.print(F("), Valve Pin: ")); Serial.print(PIN_VALVE);
+  Serial.print(F(" (Active-")); Serial.print(VALVE_ACTIVE_LOW ? F("LOW") : F("HIGH"));
+  Serial.println(F(")"));
+  Serial.println(F("========================================"));
+
   pinMode(PIN_LIGHT, OUTPUT);
   pinMode(PIN_VALVE, OUTPUT);
 
@@ -342,7 +415,7 @@ void setup() {
   applyLightState(g_light_state);
   applyValveState(g_valve_state);
 
-  Serial.begin(9600);
+  Serial.println(F("[DEBUG] Initialization complete. Listening for commands on Serial 9600 baud..."));
 }
 
 void loop() {
@@ -357,6 +430,9 @@ void loop() {
     } else {
       if (g_rx_len < (sizeof(g_rx_buffer) - 1)) {
         g_rx_buffer[g_rx_len++] = c;
+      } else {
+        Serial.println(F("[DEBUG] WARNING: RX buffer overflow, resetting line"));
+        g_rx_len = 0;
       }
     }
   }
