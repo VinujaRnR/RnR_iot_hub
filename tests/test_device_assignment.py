@@ -94,3 +94,22 @@ async def test_db_device_columns_and_command_json(tmp_path):
         "params": {"shoulder": 0.3},
     }
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_device_manager_autoconfigures_logical_devices():
+    mgr = create_default_device_manager()
+    # water_valve_1 is automatically configured or resolved to active controller
+    valve_dev = mgr.get_device("water_valve_1")
+    assert valve_dev is not None
+
+    with patch.object(valve_dev, "_ensure_port_open", return_value=MagicMock()):
+        res = await mgr.dispatch("water_valve_1", "VALVE_ON", {})
+    assert res["command"] == {"action": "VALVE_ON"}
+
+    # Any newly seen dynamic logical device auto-resolves to controller
+    fan_dev = mgr.get_device("fan_cooling_1")
+    assert fan_dev is not None
+    with patch.object(fan_dev, "_ensure_port_open", return_value=MagicMock()):
+        res_fan = await mgr.dispatch("fan_cooling_1", "FAN_ON", {})
+    assert res_fan["command"] == {"action": "FAN_ON"}

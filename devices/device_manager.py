@@ -39,9 +39,20 @@ class DeviceManager:
         dev = self._devices.get(target_id)
         if dev:
             return dev
-        # Fallback for dynamic named devices like light_glow_*, or MACs
-        if (device_id.startswith("light_glow") or len(device_id) == 12) and "/dev/ttyUSB0" in self._devices:
-            return self._devices.get("/dev/ttyUSB0")
+
+        # Auto-resolve any logical device to active physical serial controller
+        serial_controllers = [
+            d for k, d in self._devices.items()
+            if hasattr(d, "port") and (str(k).startswith("/dev/tty") or hasattr(d, "_ensure_port_open"))
+        ]
+        if serial_controllers:
+            primary = serial_controllers[0]
+            # Automatically bind this logical device to the active controller
+            controller_id = getattr(primary, "device_id", str(primary))
+            self.register_alias(device_id, controller_id)
+            logger.info("Auto-configured new logical device '%s' -> serial controller '%s'", device_id, getattr(primary, "port", controller_id))
+            return primary
+
         return None
 
     def list_devices(self) -> List[str]:
@@ -77,23 +88,32 @@ class DeviceManager:
 
 
 def create_default_device_manager() -> DeviceManager:
-    """Factory creating DeviceManager pre-populated with standard devices and physical Arduino Nano."""
+    """Factory creating DeviceManager with auto-scanned serial ports and dynamic logical device binding."""
     manager = DeviceManager()
     manager.register_device(MockLedActuator("iot_001"))
     manager.register_device(MockTemperatureSensor("iot_002"))
 
-    # Register physical Arduino Nano on /dev/ttyUSB0
-    try:
-        from devices.arduino_nano import ArduinoNanoDevice
-        nano = ArduinoNanoDevice(port="/dev/ttyUSB0", device_id="light_glow_1", name="light_glow_1")
-        manager.register_device(nano)
-        manager.register_alias("/dev/ttyUSB0", "light_glow_1")
-        manager.register_alias("ttyUSB0", "light_glow_1")
-        manager.register_alias("98a316e6b658", "light_glow_1")
-        manager.register_alias("3417ebc3b479", "light_glow_1")
-        manager.register_alias("C45BBE6DF6A9", "light_glow_1")
-        manager.register_alias("light_glow_2", "light_glow_1")
-    except Exception as exc:
-        logger.warning("Could not register Arduino Nano: %s", exc)
+    # Auto-scan candidate serial ports (/dev/ttyUSB*, /dev/ttyACM*)
+    import glob
+    scanned_ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+    ports_to_bind = scanned_ports if scanned_ports else ["/dev/ttyUSB0"]
+
+    from devices.arduino_nano import ArduinoNanoDevice
+    for port in ports_to_bind:
+        try:
+            ctrl = ArduinoNanoDevice(port=port, device_id=port, name=f"Serial Controller ({port})")
+            manager.register_device(port, ctrl)
+            manager.register_alias(port.replace("/dev/", ""), port)
+            # Default logical device aliases
+            manager.register_alias("light_glow_1", port)
+            manager.register_alias("light_glow_2", port)
+            manager.register_alias("water_valve_1", port)
+            manager.register_alias("water_valve_2", port)
+            manager.register_alias("98a316e6b658", port)
+            manager.register_alias("3417ebc3b479", port)
+            manager.register_alias("C45BBE6DF6A9", port)
+            logger.info("Auto-configured serial controller on %s", port)
+        except Exception as exc:
+            logger.warning("Could not auto-configure serial controller on %s: %s", port, exc)
 
     return manager

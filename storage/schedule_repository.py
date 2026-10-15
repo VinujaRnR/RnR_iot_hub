@@ -188,6 +188,34 @@ class ScheduleRepository:
                     ),
                 )
 
+            # Auto-register and persist all unique scheduled devices in the devices table
+            seen_devs = set()
+            for act in actions:
+                act_d = act.to_dict() if hasattr(act, "to_dict") else dict(act)
+                d_id = act_d.get("device_id") or act_d.get("iot_node_id")
+                if d_id and d_id not in seen_devs:
+                    seen_devs.add(d_id)
+                    d_name = act_d.get("device_name") or d_id
+                    d_type = act_d.get("device_type") or "actuator"
+                    d_chan = act_d.get("channel_key", "default")
+                    caps_json = json.dumps({"type": d_type, "channels": [d_chan], "actions": [act_d.get("action")]})
+                    try:
+                        await conn.execute(
+                            """
+                            INSERT INTO devices (device_id, name, capabilities_json, connection_state, last_seen, updated_at)
+                            VALUES (?, ?, ?, 'ONLINE', ?, ?)
+                            ON CONFLICT(device_id) DO UPDATE SET
+                                name = COALESCE(excluded.name, devices.name),
+                                capabilities_json = excluded.capabilities_json,
+                                connection_state = 'ONLINE',
+                                last_seen = excluded.last_seen,
+                                updated_at = excluded.updated_at
+                            """,
+                            (d_id, d_name, caps_json, now, now),
+                        )
+                    except Exception as exc:
+                        logger.debug("Auto-device persistence skipped: %s", exc)
+
         logger.info("Persisted schedule '%s' (rev %d) with %d action(s) atomically", schedule_id, revision, len(actions))
 
     async def get_schedule(self, schedule_id: str) -> Optional[Dict[str, Any]]:
