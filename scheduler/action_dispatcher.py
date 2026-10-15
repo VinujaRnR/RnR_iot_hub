@@ -164,6 +164,7 @@ class ActionDispatcher:
         params_to_dispatch = dict(params) if isinstance(params, dict) else {}
         if "target_device" not in params_to_dispatch:
             params_to_dispatch["target_device"] = target_name
+        params_to_dispatch["params"] = params if isinstance(params, dict) else {}
 
         logger.info(
             ">>> [DISPATCH] Executing '%s' on device '%s' (target: %s, Action ID: %s)",

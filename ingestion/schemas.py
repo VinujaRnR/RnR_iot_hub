@@ -24,10 +24,19 @@ class ScheduledAction(BaseModel):
     time: str = Field(..., description="Execution time in 24-hour HH:MM format (e.g. '08:30')")
     action: str = Field(..., min_length=1, description="Known, authorized operation to execute")
     channel_key: str = Field(..., min_length=1, description="Target device channel key (e.g. 'ch1', 'relay_1')")
-    params: Dict[str, Any] = Field(default_factory=dict, description="Action parameter dictionary")
+    params: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Action parameter dictionary")
     sub_resource: str = Field(..., min_length=1, description="Identifier of owning sub-resource")
     iot_node_id: str = Field(..., min_length=1, description="Configured target IoT device/node identifier")
     action_id: Optional[str] = Field(default=None, description="Optional action identifier")
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def coerce_params(cls, v: Any) -> Dict[str, Any]:
+        if v is None:
+            return {}
+        if not isinstance(v, dict):
+            raise ValueError(f"Parameters must be a dictionary or null, got {type(v).__name__}")
+        return v
 
     @field_validator("time")
     @classmethod
@@ -130,12 +139,21 @@ class ScheduleEntry(BaseModel):
     time: str = Field(..., description="Execution time in 24-hour HH:MM format")
     action: str = Field(..., min_length=1, description="Operation to execute")
     channel_key: str = Field(..., min_length=1, description="Device channel key")
-    params: Dict[str, Any] = Field(default_factory=dict, description="Action parameters")
+    params: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Action parameters")
     sub_resource: str = Field(..., min_length=1, description="Owning sub-resource identifier")
     iot_node_id: str = Field(..., min_length=1, description="Target IoT node identifier")
 
     production_order_id: Optional[str] = Field(default=None, description="Optional production order identifier")
     resource_id: Optional[str] = Field(default=None, description="Optional resource identifier")
+
+    @field_validator("params", mode="before")
+    @classmethod
+    def coerce_params(cls, v: Any) -> Dict[str, Any]:
+        if v is None:
+            return {}
+        if not isinstance(v, dict):
+            raise ValueError(f"Parameters must be a dictionary or null, got {type(v).__name__}")
+        return v
 
     @field_validator("time")
     @classmethod
