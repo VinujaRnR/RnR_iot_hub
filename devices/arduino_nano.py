@@ -128,6 +128,24 @@ class ArduinoNanoDevice:
                     logger.info(">>> Physical Arduino Nano [%s]: Sent '0' -> LED / LIGHT IS OFF", self.port)
                     return {"status": "SUCCESS", "action": "LIGHTS_OFF", "state": "OFF", "port": self.port}
 
+                elif action_upper in ("VALVE_ON", "VALVE_OPEN", "V"):
+                    ser.write(b"v")
+                    ser.flush()
+                    self._state["valve"] = "OPEN"
+                    if cmd_id:
+                        self._last_command_id = cmd_id
+                    logger.info(">>> Physical Device [%s]: Sent 'v' -> VALVE IS OPEN/ON", self.port)
+                    return {"status": "SUCCESS", "action": "VALVE_ON", "state": "OPEN", "port": self.port}
+
+                elif action_upper in ("VALVE_OFF", "VALVE_CLOSE", "C"):
+                    ser.write(b"c")
+                    ser.flush()
+                    self._state["valve"] = "CLOSED"
+                    if cmd_id:
+                        self._last_command_id = cmd_id
+                    logger.info(">>> Physical Device [%s]: Sent 'c' -> VALVE IS CLOSED/OFF", self.port)
+                    return {"status": "SUCCESS", "action": "VALVE_OFF", "state": "CLOSED", "port": self.port}
+
                 elif action_upper == "STATUS":
                     return {"status": "SUCCESS", "action": "STATUS", "state": self._state.get("led", "UNKNOWN")}
 

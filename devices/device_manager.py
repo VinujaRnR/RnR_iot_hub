@@ -78,6 +78,7 @@ def create_default_device_manager() -> DeviceManager:
         nano = ArduinoNanoDevice(port="/dev/ttyUSB0", device_id="/dev/ttyUSB0")
         manager.register_device(nano)
         manager.register_alias("98a316e6b658", "/dev/ttyUSB0")
+        manager.register_alias("3417ebc3b479", "/dev/ttyUSB0")
         manager.register_alias("ttyUSB0", "/dev/ttyUSB0")
     except Exception as exc:
         logger.warning("Could not register Arduino Nano: %s", exc)

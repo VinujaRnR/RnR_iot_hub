@@ -245,14 +245,17 @@ class RabbitMQConsumer:
             await self._safe_reject(message, requeue=False)
             return
 
-        # Check if message is a production schedule (contains schedules, production_orders, or schedule_id)
+        rk = getattr(message, "routing_key", "")
+        # Check if message is a production schedule (contains schedules, production_orders, sub_resources, or schedule routing key)
         is_schedule = (
             "production_orders" in payload
+            or "production_order" in payload
+            or "sub_resources" in payload
+            or "production_list" in payload
             or "schedule_id" in payload
             or ("schedules" in payload and any("time" in s or "sub_resources" in s for s in payload["schedules"]))
+            or (isinstance(rk, str) and "schedule" in rk.lower())
         )
-
-        rk = getattr(message, "routing_key", "")
         detected_type = "SCHEDULE" if is_schedule else "COMMAND_BATCH"
         log_snippet = raw_body if len(raw_body) <= 1500 else raw_body[:1500] + "... [truncated]"
         logger.info(

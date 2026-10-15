@@ -6,7 +6,7 @@ as well as the top-level schedules array.
 
 from __future__ import annotations
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import zoneinfo
 
@@ -180,14 +180,41 @@ class DailyProductionSchedule(BaseModel):
     @classmethod
     def normalize_incoming_schedule_payload(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            # 1. Default schedule_id and hub_id if missing
+            # 1. Default timezone if missing
+            data.setdefault("timezone", data.get("timezone") or "Asia/Kolkata")
+
+            # 2. Extract or default date
+            po_data = data.get("production_order")
+            start_date = po_data.get("start_date") if isinstance(po_data, dict) else None
+            date = data.get("date") or start_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            data.setdefault("date", date)
+
+            # 3. Default hub_id and schedule_id
             hub_id = data.get("hub_id") or "hub-01"
-            date = data.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
             data.setdefault("hub_id", hub_id)
             data.setdefault("schedule_id", f"{hub_id}-{date}")
             data.setdefault("revision", 1)
 
-            # 2. Check if 'schedules' contains nested production order / sub_resource blocks
+            # 4. Check if root contains production_order / sub_resources without production_orders wrapper
+            if "production_orders" not in data:
+                if "sub_resources" in data or "production_order" in data or "resource" in data:
+                    po_id = po_data.get("id") if isinstance(po_data, dict) else data.get("production_order_id", "PO-1")
+                    res_info = data.get("resource") or {}
+                    res_id = res_info.get("id") if isinstance(res_info, dict) else data.get("resource_id", "RES-1")
+                    sub_res_list = data.get("sub_resources", [])
+                    data["production_orders"] = [
+                        {
+                            "production_order_id": str(po_id or "PO-1"),
+                            "resources": [
+                                {
+                                    "resource_id": str(res_id or "RES-1"),
+                                    "sub_resources": sub_res_list,
+                                }
+                            ],
+                        }
+                    ]
+
+            # 5. Check if 'schedules' contains nested production order / sub_resource blocks
             schedules = data.get("schedules")
             if isinstance(schedules, list):
                 converted_orders = []
