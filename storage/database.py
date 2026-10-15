@@ -160,6 +160,7 @@ class DatabaseManager:
                 device_type TEXT,
                 device_number INTEGER,
                 device_name TEXT,
+                params TEXT,
                 status TEXT NOT NULL DEFAULT 'PENDING',
                 created_at TEXT NOT NULL,
                 executed_at TEXT,
@@ -169,7 +170,7 @@ class DatabaseManager:
             """
         )
 
-        # Migration: add device assignment columns, backfill from legacy params, drop params columns.
+        # Migration: ensure device assignment columns and params exist
         async with self._conn.execute("PRAGMA table_info(scheduled_actions)") as cur:
             existing_cols = {row[1] for row in await cur.fetchall()}
         for col, ddl in (
@@ -177,29 +178,24 @@ class DatabaseManager:
             ("device_type", "TEXT"),
             ("device_number", "INTEGER"),
             ("device_name", "TEXT"),
+            ("params", "TEXT"),
         ):
             if col not in existing_cols:
                 await self._conn.execute(f"ALTER TABLE scheduled_actions ADD COLUMN {col} {ddl};")
-        if "params_json" in existing_cols or "params" in existing_cols:
-            legacy_src = "params_json" if "params_json" in existing_cols else "params"
+        if "params_json" in existing_cols:
             try:
                 await self._conn.execute(
-                    f"""
+                    """
                     UPDATE scheduled_actions SET
-                        device_id = COALESCE(device_id, json_extract({legacy_src}, '$.device'), iot_node_id),
-                        device_type = COALESCE(device_type, json_extract({legacy_src}, '$.device_type')),
-                        device_number = COALESCE(device_number, json_extract({legacy_src}, '$.device_number'))
+                        device_id = COALESCE(device_id, json_extract(params_json, '$.device'), iot_node_id),
+                        device_type = COALESCE(device_type, json_extract(params_json, '$.device_type')),
+                        device_number = COALESCE(device_number, json_extract(params_json, '$.device_number'))
                     WHERE device_id IS NULL
                     """
                 )
+                await self._conn.execute("ALTER TABLE scheduled_actions DROP COLUMN params_json;")
             except Exception as exc:
-                logger.debug("Legacy params backfill skipped: %s", exc)
-            for legacy_col in ("params", "params_json"):
-                if legacy_col in existing_cols:
-                    try:
-                        await self._conn.execute(f"ALTER TABLE scheduled_actions DROP COLUMN {legacy_col};")
-                    except Exception as exc:
-                        logger.warning("Could not drop legacy column '%s': %s", legacy_col, exc)
+                logger.debug("Legacy params_json migration skipped: %s", exc)
         await self._conn.commit()
         await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_schedule ON scheduled_actions(schedule_id);")
         await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_due ON scheduled_actions(scheduled_at, status);")

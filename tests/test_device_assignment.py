@@ -54,7 +54,7 @@ def test_normalizer_assigns_device_columns():
 
 
 @pytest.mark.asyncio
-async def test_db_has_no_params_columns_and_command_json(tmp_path):
+async def test_db_device_columns_and_command_json(tmp_path):
     db = DatabaseManager(db_path=str(tmp_path / "t.db"))
     await db.connect()
     repo = ScheduleRepository(db)
@@ -63,19 +63,34 @@ async def test_db_has_no_params_columns_and_command_json(tmp_path):
 
     async with db.connection.execute("PRAGMA table_info(scheduled_actions)") as cur:
         cols = {r[1] for r in await cur.fetchall()}
-    assert "params" not in cols and "params_json" not in cols
-    assert {"device_id", "device_type", "device_number", "device_name"} <= cols
+    assert {"device_id", "device_type", "device_number", "device_name", "params"} <= cols
 
     nano = ArduinoNanoDevice(port="/dev/ttyUSB0", device_id="light_glow_1", name="light_glow_1")
     acts = await repo.get_scheduled_actions("s1")
+    a = acts[0]
+    assert a["device_id"] == "light_glow_1"
+    assert a["device_type"] == "light_glow"
+    assert a["device_number"] == 1
+    assert a["params"] == {}
+
     with patch.object(nano, "_ensure_port_open", return_value=MagicMock()):
-        a = acts[0]
         res = await nano.execute_command(
             a["action"], {"target_device": a["device_id"], "params": a["params"]}
         )
+    # When schedule has empty params, command JSON has no params
     assert res["command"] == {
         "action": "LIGHT_ON",
-        "params": {"device_type": "light_glow", "device_number": 1},
     }
     assert "topic" not in res["command"]
+    assert "params" not in res["command"]
+
+    # When action has params (e.g. {"shoulder": 0.3}), command JSON includes them
+    with patch.object(nano, "_ensure_port_open", return_value=MagicMock()):
+        res2 = await nano.execute_command(
+            "change_size", {"target_device": a["device_id"], "params": {"shoulder": 0.3}}
+        )
+    assert res2["command"] == {
+        "action": "change_size",
+        "params": {"shoulder": 0.3},
+    }
     await db.close()

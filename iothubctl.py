@@ -719,6 +719,8 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
                         cmd["params"] = p
                     print(f"  {BOLD}Scheduled At:{RESET}  {m.get('scheduled_at')}")
                     print(f"  {BOLD}Target Device:{RESET} {GREEN}{dev}{RESET} ({m.get('channel_key')})")
+                    print(f"  {BOLD}Device Type:{RESET}   {m.get('device_type') or '-'}")
+                    print(f"  {BOLD}Device Num:{RESET}    {m.get('device_number') if m.get('device_number') is not None else '-'}")
                     print(f"  {BOLD}Status:{RESET}        {m.get('status')}")
                     print(f"  {BOLD}Command Payload Transmitted to Hardware:{RESET}")
                     print("  " + json.dumps(cmd, indent=2).replace("\n", "\n  "))
@@ -733,16 +735,20 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
             print(f"  {BOLD}Status:{RESET}     {GREEN if sched['status'] == 'ACTIVE' else YELLOW}{sched['status']}{RESET}")
             print(f"  {BOLD}Hash:{RESET}       {sched.get('raw_json_hash', 'N/A')}")
             print(f"\n {BOLD}Actions ({len(actions)}):{RESET}")
-            print(f"  {'TIME':<22} {'ACTION':<14} {'TARGET/NODE':<16} {'CHANNEL':<18} {'STATUS':<11} {'PARAMS'}")
-            print(f"  {'-'*22} {'-'*14} {'-'*16} {'-'*18} {'-'*11} {'-'*20}")
+            print(f"  {'TIME':<26} {'ACTION':<12} {'TARGET/NODE':<14} {'DEVICE TYPE':<14} {'DEV NUM':<8} {'CHANNEL':<18} {'STATUS':<11} {'PARAMS'}")
+            print(f"  {'-'*26} {'-'*12} {'-'*14} {'-'*14} {'-'*8} {'-'*18} {'-'*11} {'-'*15}")
             for a in actions:
                 st = a.get("status", "PENDING")
                 st_c = GREEN if st == "COMPLETED" else (YELLOW if st == "PENDING" else RED)
+                dev_target = a.get("device_id") or a.get("iot_node_id") or "-"
+                dev_type = a.get("device_type") or "-"
+                dev_num = str(a.get("device_number")) if a.get("device_number") is not None else "-"
+                channel = a.get("channel_key") or "-"
                 p = a.get("params") or {}
                 p_summary = json.dumps(p) if p else "-"
-                if len(p_summary) > 35:
-                    p_summary = p_summary[:32] + "..."
-                print(f"  {a.get('scheduled_at', ''):<22} {a.get('action', ''):<14} {a.get('iot_node_id', ''):<16} {a.get('channel_key', ''):<18} {st_c}{st:<11}{RESET} {DIM}{p_summary}{RESET}")
+                if len(p_summary) > 30:
+                    p_summary = p_summary[:27] + "..."
+                print(f"  {a.get('scheduled_at', ''):<26} {a.get('action', ''):<12} {dev_target:<14} {dev_type:<14} {dev_num:<8} {channel:<18} {st_c}{st:<11}{RESET} {DIM}{p_summary}{RESET}")
             print()
             return 0
 

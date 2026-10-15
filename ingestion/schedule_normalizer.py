@@ -58,6 +58,7 @@ class NormalizedActionRecord(BaseModel):
     device_type: Optional[str] = Field(default=None, description="Assigned device type (e.g. light_glow)")
     device_number: Optional[int] = Field(default=None, description="Assigned device number (e.g. 1)")
     device_name: Optional[str] = Field(default=None, description="Assigned device display name")
+    params: Optional[Dict[str, Any]] = Field(default=None, description="Action parameters if any")
     status: str = Field(default="PENDING", description="Execution status")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -207,13 +208,19 @@ class ScheduleNormalizer:
                     or act.get("command_id")
                     or f"action-{action_counter:03d}"
                 )
-                legacy_params = act.get("params") or act.get("parameters") or {}
-                if not isinstance(legacy_params, dict):
-                    legacy_params = {}
-                dev_id = act.get("device_id") or legacy_params.get("device")
-                dev_type = act.get("device_type") or legacy_params.get("device_type")
-                dev_num = act.get("device_number", legacy_params.get("device_number"))
-                dev_name = act.get("device_name")
+                raw_params = act.get("params") or act.get("parameters") or {}
+                if not isinstance(raw_params, dict):
+                    raw_params = {}
+                dev_id = act.get("device_id") or raw_params.get("device") or raw_params.get("device_id")
+                dev_type = act.get("device_type") or raw_params.get("device_type")
+                dev_num = act.get("device_number") if act.get("device_number") is not None else raw_params.get("device_number")
+                dev_name = act.get("device_name") or raw_params.get("device_name")
+                if not dev_id and dev_type and dev_num is not None:
+                    dev_id = f"{dev_type}_{dev_num}"
+                act_params = {
+                    k: v for k, v in raw_params.items()
+                    if k not in ("device", "device_type", "device_number", "device_id", "device_name")
+                }
                 node_id = (
                     dev_id
                     or act.get("iot_node_id")
@@ -243,6 +250,7 @@ class ScheduleNormalizer:
                     device_type=str(dev_type) if dev_type is not None else None,
                     device_number=int(dev_num) if dev_num is not None and str(dev_num).lstrip('-').isdigit() else None,
                     device_name=str(dev_name) if dev_name is not None else None,
+                    params=act_params if act_params else None,
                     status="PENDING",
                 )
                 records.append(record)
@@ -301,9 +309,21 @@ class ScheduleNormalizer:
                 act_id = sched_entry.get("action_id") or f"action-{action_counter:03d}"
                 time_val = sched_entry.get("scheduled_at") or sched_entry.get("time") or "00:00:00"
                 iso_timestamp = format_iso_scheduled_at(schedule_date, str(time_val), schedule_tz)
-                flat_params = sched_entry.get("params", {})
+                raw_params = sched_entry.get("params") or sched_entry.get("parameters") or {}
+                if not isinstance(raw_params, dict):
+                    raw_params = {}
+                dev_id = sched_entry.get("device_id") or raw_params.get("device") or raw_params.get("device_id")
+                dev_type = sched_entry.get("device_type") or raw_params.get("device_type")
+                dev_num = sched_entry.get("device_number") if sched_entry.get("device_number") is not None else raw_params.get("device_number")
+                dev_name = sched_entry.get("device_name") or raw_params.get("device_name")
+                if not dev_id and dev_type and dev_num is not None:
+                    dev_id = f"{dev_type}_{dev_num}"
+                act_params = {
+                    k: v for k, v in raw_params.items()
+                    if k not in ("device", "device_type", "device_number", "device_id", "device_name")
+                }
                 flat_node = (
-                    (flat_params.get("device") if isinstance(flat_params, dict) else None)
+                    dev_id
                     or sched_entry.get("iot_node_id")
                     or "unknown"
                 )
@@ -319,13 +339,67 @@ class ScheduleNormalizer:
                         scheduled_at=iso_timestamp,
                         action=str(sched_entry.get("action")),
                         channel_key=str(sched_entry.get("channel_key", "default")),
-                        device_id=str(sched_entry.get("device_id")) if sched_entry.get("device_id") else None,
-                        device_type=sched_entry.get("device_type"),
-                        device_number=sched_entry.get("device_number"),
-                        device_name=sched_entry.get("device_name"),
+                        device_id=str(dev_id) if dev_id is not None else None,
+                        device_type=str(dev_type) if dev_type is not None else None,
+                        device_number=int(dev_num) if dev_num is not None and str(dev_num).lstrip('-').isdigit() else None,
+                        device_name=str(dev_name) if dev_name is not None else None,
+                        params=act_params if act_params else None,
                         status="PENDING",
                     )
                 )
+
+        # 5. If no records extracted yet, check production_list inside schedules
+        if not records:
+            for sched_entry in payload.get("schedules", []):
+                po_info = sched_entry.get("production_order") or {}
+                po_id = po_info.get("id") or sched_entry.get("production_order_id")
+                res_info = sched_entry.get("resource") or {}
+                res_id = res_info.get("id") or sched_entry.get("resource_id")
+                sub_res_map = {s.get("id"): s for s in sched_entry.get("sub_resources", []) if isinstance(s, dict)}
+                for prod_item in sched_entry.get("production_list", []):
+                    stage_id = prod_item.get("id") or prod_item.get("stage_id")
+                    time_val = prod_item.get("time") or "00:00:00"
+                    iso_timestamp = format_iso_scheduled_at(schedule_date, str(time_val), schedule_tz)
+                    for act in prod_item.get("sub_resource_actions", []):
+                        action_counter += 1
+                        act_id = act.get("action_id") or act.get("id") or f"action-{action_counter:03d}"
+                        sub_id = act.get("sub_resource")
+                        sub_info = sub_res_map.get(sub_id, {})
+                        sub_node_id = sub_info.get("iot_node_id") or "unknown"
+                        raw_params = act.get("params") or act.get("parameters") or {}
+                        if not isinstance(raw_params, dict):
+                            raw_params = {}
+                        dev_id = act.get("device_id") or raw_params.get("device") or raw_params.get("device_id")
+                        dev_type = act.get("device_type") or raw_params.get("device_type")
+                        dev_num = act.get("device_number") if act.get("device_number") is not None else raw_params.get("device_number")
+                        dev_name = act.get("device_name") or raw_params.get("device_name")
+                        if not dev_id and dev_type and dev_num is not None:
+                            dev_id = f"{dev_type}_{dev_num}"
+                        act_params = {
+                            k: v for k, v in raw_params.items()
+                            if k not in ("device", "device_type", "device_number", "device_id", "device_name")
+                        }
+                        node_id = dev_id or act.get("iot_node_id") or sub_node_id or "unknown"
+                        records.append(
+                            NormalizedActionRecord(
+                                schedule_id=schedule_id,
+                                action_id=str(act_id),
+                                production_order_id=po_id,
+                                resource_id=res_id,
+                                sub_resource_id=sub_id,
+                                iot_node_id=str(node_id),
+                                stage_id=stage_id,
+                                scheduled_at=iso_timestamp,
+                                action=str(act.get("action") or "NOOP"),
+                                channel_key=str(act.get("channel_key") or "default"),
+                                device_id=str(dev_id) if dev_id is not None else None,
+                                device_type=str(dev_type) if dev_type is not None else None,
+                                device_number=int(dev_num) if dev_num is not None and str(dev_num).lstrip('-').isdigit() else None,
+                                device_name=str(dev_name) if dev_name is not None else None,
+                                params=act_params if act_params else None,
+                                status="PENDING",
+                            )
+                        )
 
         return records
 

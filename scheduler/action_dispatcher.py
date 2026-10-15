@@ -94,7 +94,7 @@ class ActionDispatcher:
         if isinstance(params, dict):
             device_id = params.get("device")
         if not device_id:
-            device_id = str(action.get("iot_node_id") or action.get("device_id") or "default")
+            device_id = str(action.get("device_id") or action.get("iot_node_id") or "default")
         device_id = str(device_id)
 
         async with self._lock:
@@ -161,12 +161,8 @@ class ActionDispatcher:
         if not target_name:
             target_name = device_id
 
-        # Command params are built here from the device columns, never read from the DB
+        # Clean action parameters (excluding internal routing keys)
         cmd_params: Dict[str, Any] = dict(params) if isinstance(params, dict) else {}
-        if action.get("device_type") is not None:
-            cmd_params["device_type"] = action["device_type"]
-        if action.get("device_number") is not None:
-            cmd_params["device_number"] = action["device_number"]
         cmd_params.pop("device", None)
 
         params_to_dispatch: Dict[str, Any] = {"target_device": target_name, "params": cmd_params}

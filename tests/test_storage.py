@@ -159,9 +159,8 @@ async def test_save_schedule_restart_python_and_retrieve_actions(temp_db_file):
     assert act1["device_id"] == "light_glow_1"
     assert act1["device_type"] == "light_glow"
     assert act1["device_number"] == 1
-    assert act1["device_name"] == "light_glow #1"
-    # params are not stored; they are derived for the command JSON only
-    assert act1["params"] == {"device_type": "light_glow", "device_number": 1}
+    # If no parameters in schedule, params column is empty
+    assert act1["params"] == {}
     assert act1["status"] == "PENDING"
 
     act2 = retrieved_actions[1]
