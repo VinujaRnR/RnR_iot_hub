@@ -1,0 +1,29 @@
+[Unit]
+Description=RnR IoT Hub 60-Second Automated Schedule Watcher
+After=network.target iothubd.service
+Wants=iothubd.service
+
+[Service]
+Type=simple
+User=iothub
+Group=iothub
+SupplementaryGroups=dialout
+
+WorkingDirectory=/opt/iothub
+EnvironmentFile=/etc/iothub/iothub.env
+
+ExecStart=/opt/iothub/.venv/bin/python run_live_scheduler.py
+
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

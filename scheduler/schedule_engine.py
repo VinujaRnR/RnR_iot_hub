@@ -91,6 +91,7 @@ class ScheduleEngine:
 
         self._running: bool = False
         self._loop_task: Optional[asyncio.Task] = None
+        self._watcher_task: Optional[asyncio.Task] = None
         self._wake_event = asyncio.Event()
         self._simulated_time: Optional[str] = None
         self._last_device_states: Dict[str, str] = {}
@@ -114,7 +115,7 @@ class ScheduleEngine:
         return current_utc_time()
 
     async def start(self) -> None:
-        """Starts the schedule engine loop and action dispatcher."""
+        """Starts the schedule engine loop, 60s watcher, and action dispatcher."""
         if self._running:
             return
 
@@ -122,6 +123,7 @@ class ScheduleEngine:
         self.dispatcher.start()
         self._wake_event.clear()
         self._loop_task = asyncio.create_task(self.scheduler_loop(), name="schedule_engine_loop")
+        self._watcher_task = asyncio.create_task(self._schedule_watcher_loop(), name="schedule_watcher_60s")
         logger.info("ScheduleEngine started (Timezone: %s).", SCHEDULE_TIMEZONE)
 
     async def stop(self) -> None:
@@ -131,6 +133,14 @@ class ScheduleEngine:
 
         self._running = False
         self._wake_event.set()
+
+        if self._watcher_task:
+            self._watcher_task.cancel()
+            try:
+                await self._watcher_task
+            except asyncio.CancelledError:
+                pass
+            self._watcher_task = None
 
         if self._loop_task:
             self._loop_task.cancel()
@@ -142,6 +152,112 @@ class ScheduleEngine:
 
         await self.dispatcher.stop()
         logger.info("ScheduleEngine stopped gracefully.")
+
+    async def _schedule_watcher_loop(self) -> None:
+        """
+        Continuous 60-Second Schedule Watcher running natively inside the system daemon:
+        - Evaluates schedule every 60s against the local clock (Asia/Kolkata).
+        - Inspects the command payload JSON for current time slot.
+        - Compares desired state with the previous state.
+        - Transmits the command payload JSON to hardware IF AND ONLY IF the action state changed.
+        """
+        logger.info("ScheduleEngine 60-second automated schedule watcher active.")
+        try:
+            tz = zoneinfo.ZoneInfo(SCHEDULE_TIMEZONE)
+        except Exception:
+            tz = timezone.utc
+
+        while self._running:
+            try:
+                # 0. System Clock Safety Validation
+                if self.supervisor and not getattr(self.supervisor, "clock_safe", True):
+                    await asyncio.sleep(self.poll_interval)
+                    continue
+
+                now_iso = self.get_current_utc_time()
+                try:
+                    now_dt = datetime.fromisoformat(now_iso).astimezone(tz)
+                except Exception:
+                    now_dt = datetime.now(tz)
+                now_hm = now_dt.strftime("%H:%M")
+
+                schedules = await self.schedule_repo.list_schedules(status="ACTIVE")
+                if not schedules:
+                    schedules = await self.schedule_repo.list_schedules()
+
+                active_sched_id = schedules[0]["schedule_id"] if schedules else None
+                actions = []
+                if active_sched_id:
+                    actions = await self.schedule_repo.get_scheduled_actions(active_sched_id)
+
+                if actions:
+                    past_or_current = []
+                    future_actions = []
+
+                    for a in actions:
+                        sched_at = a.get("scheduled_at", "")
+                        if "T" in sched_at:
+                            try:
+                                sched_dt = datetime.fromisoformat(sched_at).astimezone(tz)
+                                if sched_dt <= now_dt:
+                                    past_or_current.append(a)
+                                else:
+                                    future_actions.append(a)
+                            except Exception:
+                                pass
+
+                    current_action = past_or_current[-1] if past_or_current else None
+                    next_action = future_actions[0] if future_actions else None
+
+                    if not current_action:
+                        # Schedule has not started yet today
+                        wait_dur = 60.0 if self._simulated_time is None else min(0.1, self.poll_interval)
+                        await asyncio.sleep(wait_dur)
+                        continue
+
+                    dev_key = str(current_action.get("device_id") or current_action.get("iot_node_id") or "light_glow_1")
+                    act_name = current_action.get("action", "LIGHT_ON")
+                    desired_st = None
+                    act_u = act_name.strip().upper()
+                    if act_u in ("LIGHTS_ON", "LIGHT_ON", "ON"):
+                        desired_st = "ON"
+                    elif act_u in ("LIGHTS_OFF", "LIGHT_OFF", "OFF"):
+                        desired_st = "OFF"
+                    elif act_u in ("VALVE_ON", "VALVE_OPEN", "OPEN"):
+                        desired_st = "OPEN"
+                    elif act_u in ("VALVE_OFF", "VALVE_CLOSE", "CLOSE"):
+                        desired_st = "CLOSED"
+
+                    prev_st = self._last_device_states.get(dev_key)
+
+                    if desired_st and prev_st != desired_st:
+                        logger.info(
+                            "[SCHEDULE 60s TICK] [%s] State Change: %s -> %s on '%s'. Queueing command JSON for action '%s'.",
+                            now_hm,
+                            prev_st or "INITIAL",
+                            desired_st,
+                            dev_key,
+                            act_name,
+                        )
+                        self._last_device_states[dev_key] = desired_st
+                        await self.dispatcher.queue_action(current_action)
+                    else:
+                        next_desc = f"{next_action.get('action')} at {next_action.get('scheduled_at', '').split('T')[1][:5]}" if next_action else "None (End of schedule)"
+                        logger.debug(
+                            "[SCHEDULE 60s TICK] [%s] Device '%s' already in state '%s'. Action state unchanged. Next: %s",
+                            now_hm,
+                            dev_key,
+                            desired_st,
+                            next_desc,
+                        )
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("Error in 60s schedule watcher loop: %s", exc, exc_info=True)
+
+            await asyncio.sleep(60.0)
+
 
     def notify_schedule_updated(self) -> None:
         """

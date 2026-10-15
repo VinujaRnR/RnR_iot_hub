@@ -101,18 +101,18 @@ def create_default_device_manager() -> DeviceManager:
     from devices.arduino_nano import ArduinoNanoDevice
     for port in ports_to_bind:
         try:
-            ctrl = ArduinoNanoDevice(port=port, device_id=port, name=f"Serial Controller ({port})")
-            manager.register_device(port, ctrl)
-            manager.register_alias(port.replace("/dev/", ""), port)
+            ctrl = ArduinoNanoDevice(port=port, device_id="light_glow_1", name="light_glow_1")
+            manager.register_device("light_glow_1", ctrl)
+            manager.register_alias(port, "light_glow_1")
+            manager.register_alias(port.replace("/dev/", ""), "light_glow_1")
             # Default logical device aliases
-            manager.register_alias("light_glow_1", port)
-            manager.register_alias("light_glow_2", port)
-            manager.register_alias("water_valve_1", port)
-            manager.register_alias("water_valve_2", port)
-            manager.register_alias("98a316e6b658", port)
-            manager.register_alias("3417ebc3b479", port)
-            manager.register_alias("C45BBE6DF6A9", port)
-            logger.info("Auto-configured serial controller on %s", port)
+            manager.register_alias("light_glow_2", "light_glow_1")
+            manager.register_alias("water_valve_1", "light_glow_1")
+            manager.register_alias("water_valve_2", "light_glow_1")
+            manager.register_alias("98a316e6b658", "light_glow_1")
+            manager.register_alias("3417ebc3b479", "light_glow_1")
+            manager.register_alias("C45BBE6DF6A9", "light_glow_1")
+            logger.info("Auto-configured serial controller on %s for light_glow_1", port)
         except Exception as exc:
             logger.warning("Could not auto-configure serial controller on %s: %s", port, exc)
 

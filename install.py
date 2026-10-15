@@ -105,7 +105,9 @@ SOURCE_CORE_FILES = [
     "iothubctl.py",
     "install.py",
     "uninstall.sh",
+    "run_live_scheduler.py",
 ]
+
 
 
 class IoTInstaller:
