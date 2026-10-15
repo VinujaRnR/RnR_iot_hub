@@ -36,7 +36,13 @@ class DeviceManager:
 
     def get_device(self, device_id: str) -> Optional[Any]:
         target_id = self._aliases.get(device_id, device_id)
-        return self._devices.get(target_id)
+        dev = self._devices.get(target_id)
+        if dev:
+            return dev
+        # Fallback for dynamic named devices like light_glow_*, or MACs
+        if (device_id.startswith("light_glow") or len(device_id) == 12) and "/dev/ttyUSB0" in self._devices:
+            return self._devices.get("/dev/ttyUSB0")
+        return None
 
     def list_devices(self) -> List[str]:
         return list(self._devices.keys()) + list(self._aliases.keys())
@@ -53,7 +59,11 @@ class DeviceManager:
                 f"Device '{device_id}' not found. Available devices: {self.list_devices()}"
             )
 
-        return await device.execute_command(action, parameters)
+        params_to_pass = dict(parameters) if isinstance(parameters, dict) else {}
+        if "target_device" not in params_to_pass:
+            params_to_pass["target_device"] = device_id
+
+        return await device.execute_command(action, params_to_pass)
 
     def close_all(self) -> None:
         """Closes all open devices, serial connections, and workers."""
@@ -79,6 +89,9 @@ def create_default_device_manager() -> DeviceManager:
         manager.register_device(nano)
         manager.register_alias("98a316e6b658", "/dev/ttyUSB0")
         manager.register_alias("3417ebc3b479", "/dev/ttyUSB0")
+        manager.register_alias("C45BBE6DF6A9", "/dev/ttyUSB0")
+        manager.register_alias("light_glow_1", "/dev/ttyUSB0")
+        manager.register_alias("light_glow_2", "/dev/ttyUSB0")
         manager.register_alias("ttyUSB0", "/dev/ttyUSB0")
     except Exception as exc:
         logger.warning("Could not register Arduino Nano: %s", exc)

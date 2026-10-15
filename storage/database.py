@@ -157,6 +157,7 @@ class DatabaseManager:
                 action TEXT NOT NULL,
                 channel_key TEXT NOT NULL,
                 params_json TEXT NOT NULL DEFAULT '{}',
+                params TEXT,
                 status TEXT NOT NULL DEFAULT 'PENDING',
                 created_at TEXT NOT NULL,
                 executed_at TEXT,
@@ -165,6 +166,14 @@ class DatabaseManager:
             )
             """
         )
+        try:
+            await self._conn.execute("ALTER TABLE scheduled_actions ADD COLUMN params TEXT;")
+        except Exception:
+            pass
+        try:
+            await self._conn.execute("UPDATE scheduled_actions SET params = params_json WHERE params IS NULL AND params_json IS NOT NULL;")
+        except Exception:
+            pass
         await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_schedule ON scheduled_actions(schedule_id);")
         await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_actions_due ON scheduled_actions(scheduled_at, status);")
 

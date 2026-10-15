@@ -204,10 +204,16 @@ class ScheduleNormalizer:
                     or act.get("command_id")
                     or f"action-{action_counter:03d}"
                 )
-                node_id = act.get("iot_node_id") or act.get("device_id") or sub_node_id or "unknown"
+                params = act.get("params") or act.get("parameters") or {}
+                node_id = (
+                    (params.get("device") if isinstance(params, dict) else None)
+                    or act.get("iot_node_id")
+                    or act.get("device_id")
+                    or sub_node_id
+                    or "unknown"
+                )
                 channel_key = act.get("channel_key") or sub_channel or "default"
                 action_name = act.get("action") or act.get("command") or "NOOP"
-                params = act.get("params") or act.get("parameters") or {}
                 stage_id = act.get("stage_id", sub_stage_id)
 
                 # Format timestamp
@@ -284,6 +290,12 @@ class ScheduleNormalizer:
                 act_id = sched_entry.get("action_id") or f"action-{action_counter:03d}"
                 time_val = sched_entry.get("scheduled_at") or sched_entry.get("time") or "00:00:00"
                 iso_timestamp = format_iso_scheduled_at(schedule_date, str(time_val), schedule_tz)
+                flat_params = sched_entry.get("params", {})
+                flat_node = (
+                    (flat_params.get("device") if isinstance(flat_params, dict) else None)
+                    or sched_entry.get("iot_node_id")
+                    or "unknown"
+                )
                 records.append(
                     NormalizedActionRecord(
                         schedule_id=schedule_id,
@@ -291,12 +303,12 @@ class ScheduleNormalizer:
                         production_order_id=sched_entry.get("production_order_id"),
                         resource_id=sched_entry.get("resource_id"),
                         sub_resource_id=sched_entry.get("sub_resource_id") or sched_entry.get("sub_resource"),
-                        iot_node_id=str(sched_entry.get("iot_node_id", "unknown")),
+                        iot_node_id=str(flat_node),
                         stage_id=sched_entry.get("stage_id"),
                         scheduled_at=iso_timestamp,
                         action=str(sched_entry.get("action")),
                         channel_key=str(sched_entry.get("channel_key", "default")),
-                        params=sched_entry.get("params", {}),
+                        params=flat_params,
                         status="PENDING",
                     )
                 )

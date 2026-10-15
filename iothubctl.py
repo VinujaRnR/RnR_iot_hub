@@ -710,12 +710,16 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
             print(f"  {BOLD}Status:{RESET}     {GREEN if sched['status'] == 'ACTIVE' else YELLOW}{sched['status']}{RESET}")
             print(f"  {BOLD}Hash:{RESET}       {sched.get('raw_json_hash', 'N/A')}")
             print(f"\n {BOLD}Actions ({len(actions)}):{RESET}")
-            print(f"  {'TIME':<22} {'ACTION':<14} {'NODE ID':<16} {'CHANNEL':<14} {'STATUS'}")
-            print(f"  {'-'*22} {'-'*14} {'-'*16} {'-'*14} {'-'*10}")
+            print(f"  {'TIME':<22} {'ACTION':<14} {'TARGET/NODE':<16} {'CHANNEL':<18} {'STATUS':<11} {'PARAMS'}")
+            print(f"  {'-'*22} {'-'*14} {'-'*16} {'-'*18} {'-'*11} {'-'*20}")
             for a in actions:
                 st = a.get("status", "PENDING")
                 st_c = GREEN if st == "COMPLETED" else (YELLOW if st == "PENDING" else RED)
-                print(f"  {a.get('scheduled_at', ''):<22} {a.get('action', ''):<14} {a.get('iot_node_id', ''):<16} {a.get('channel_key', ''):<14} {st_c}{st}{RESET}")
+                p = a.get("params") or {}
+                p_summary = json.dumps(p) if p else "-"
+                if len(p_summary) > 35:
+                    p_summary = p_summary[:32] + "..."
+                print(f"  {a.get('scheduled_at', ''):<22} {a.get('action', ''):<14} {a.get('iot_node_id', ''):<16} {a.get('channel_key', ''):<18} {st_c}{st:<11}{RESET} {DIM}{p_summary}{RESET}")
             print()
             return 0
 

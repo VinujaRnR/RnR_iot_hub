@@ -123,8 +123,8 @@ class ScheduleRepository:
                     """
                     INSERT INTO scheduled_actions (
                         schedule_id, action_id, production_order_id, resource_id, sub_resource_id,
-                        iot_node_id, stage_id, scheduled_at, action, channel_key, params_json, status, created_at, executed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        iot_node_id, stage_id, scheduled_at, action, channel_key, params_json, params, status, created_at, executed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         schedule_id,
@@ -137,6 +137,7 @@ class ScheduleRepository:
                         str(act_dict.get("scheduled_at")),
                         str(act_dict.get("action")),
                         str(act_dict.get("channel_key")),
+                        params_json,
                         params_json,
                         act_status,
                         now,
@@ -165,7 +166,7 @@ class ScheduleRepository:
         """Retrieves all normalized device actions for a schedule with their current states."""
         query = (
             "SELECT id, schedule_id, action_id, production_order_id, resource_id, sub_resource_id, "
-            "iot_node_id, stage_id, scheduled_at, action, channel_key, params_json, status, created_at, executed_at "
+            "iot_node_id, stage_id, scheduled_at, action, channel_key, params_json, params, status, created_at, executed_at "
             "FROM scheduled_actions WHERE schedule_id = ?"
         )
         params: List[Any] = [schedule_id]
@@ -189,7 +190,7 @@ class ScheduleRepository:
                     "scheduled_at": r["scheduled_at"],
                     "action": r["action"],
                     "channel_key": r["channel_key"],
-                    "params": json.loads(r["params_json"]) if r["params_json"] else {},
+                    "params": json.loads(r["params"] or r["params_json"] or "{}") if (r["params"] or r["params_json"]) else {},
                     "status": r["status"],
                     "created_at": r["created_at"],
                     "executed_at": r["executed_at"],
@@ -232,7 +233,7 @@ class ScheduleRepository:
     async def get_pending_actions_due(self, due_before_iso: str) -> List[Dict[str, Any]]:
         """Finds all actions awaiting execution whose scheduled_at timestamp has passed."""
         query = (
-            "SELECT id, schedule_id, action_id, iot_node_id, action, channel_key, params_json, scheduled_at, status "
+            "SELECT id, schedule_id, action_id, iot_node_id, action, channel_key, params_json, params, scheduled_at, status "
             "FROM scheduled_actions "
             "WHERE status = 'PENDING' AND scheduled_at <= ? "
             "ORDER BY scheduled_at ASC"
@@ -247,7 +248,7 @@ class ScheduleRepository:
                     "iot_node_id": r["iot_node_id"],
                     "action": r["action"],
                     "channel_key": r["channel_key"],
-                    "params": json.loads(r["params_json"]) if r["params_json"] else {},
+                    "params": json.loads(r["params"] or r["params_json"] or "{}") if (r["params"] or r["params_json"]) else {},
                     "scheduled_at": r["scheduled_at"],
                     "status": r["status"],
                 }
@@ -266,7 +267,7 @@ class ScheduleRepository:
 
         async with self.db.transaction() as conn:
             cur = await conn.execute(
-                "SELECT id, schedule_id, action_id, iot_node_id, action, channel_key, params_json, scheduled_at, status "
+                "SELECT id, schedule_id, action_id, iot_node_id, action, channel_key, params_json, params, scheduled_at, status "
                 "FROM scheduled_actions WHERE status = 'PENDING' ORDER BY scheduled_at ASC LIMIT ?",
                 (limit * 2,),
             )
@@ -302,7 +303,7 @@ class ScheduleRepository:
                     "iot_node_id": r["iot_node_id"],
                     "action": r["action"],
                     "channel_key": r["channel_key"],
-                    "params": json.loads(r["params_json"]) if r["params_json"] else {},
+                    "params": json.loads(r["params"] or r["params_json"] or "{}") if (r["params"] or r["params_json"]) else {},
                     "scheduled_at": r["scheduled_at"],
                     "status": "CLAIMED",
                 }
@@ -406,7 +407,7 @@ class ScheduleRepository:
         """Queries scheduled actions across schedules with optional filters."""
         query = (
             "SELECT id, schedule_id, action_id, production_order_id, resource_id, sub_resource_id, "
-            "iot_node_id, stage_id, scheduled_at, action, channel_key, params_json, status, created_at, executed_at "
+            "iot_node_id, stage_id, scheduled_at, action, channel_key, params_json, params, status, created_at, executed_at "
             "FROM scheduled_actions WHERE 1=1"
         )
         params: List[Any] = []
@@ -437,7 +438,7 @@ class ScheduleRepository:
                     "scheduled_at": r["scheduled_at"],
                     "action": r["action"],
                     "channel_key": r["channel_key"],
-                    "params": json.loads(r["params_json"]) if r["params_json"] else {},
+                    "params": json.loads(r["params"] or r["params_json"] or "{}") if (r["params"] or r["params_json"]) else {},
                     "status": r["status"],
                     "created_at": r["created_at"],
                     "executed_at": r["executed_at"],
@@ -449,7 +450,7 @@ class ScheduleRepository:
         """Retrieves a single scheduled action by action_id or numeric PK, including executions."""
         query = (
             "SELECT id, schedule_id, action_id, production_order_id, resource_id, sub_resource_id, "
-            "iot_node_id, stage_id, scheduled_at, action, channel_key, params_json, status, created_at, executed_at "
+            "iot_node_id, stage_id, scheduled_at, action, channel_key, params_json, params, status, created_at, executed_at "
             "FROM scheduled_actions WHERE action_id = ? OR id = ?"
         )
         async with self.db.connection.execute(query, (action_id, action_id)) as cur:
@@ -468,7 +469,7 @@ class ScheduleRepository:
                 "scheduled_at": r["scheduled_at"],
                 "action": r["action"],
                 "channel_key": r["channel_key"],
-                "params": json.loads(r["params_json"]) if r["params_json"] else {},
+                "params": json.loads(r["params"] or r["params_json"] or "{}") if (r["params"] or r["params_json"]) else {},
                 "status": r["status"],
                 "created_at": r["created_at"],
                 "executed_at": r["executed_at"],

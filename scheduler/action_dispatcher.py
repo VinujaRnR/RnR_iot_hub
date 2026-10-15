@@ -89,7 +89,13 @@ class ActionDispatcher:
         Enqueues an action into its target device's independent command queue.
         Starts a dedicated device worker task if one is not already running.
         """
-        device_id = str(action.get("iot_node_id") or action.get("device_id") or "default")
+        params = action.get("params") or action.get("parameters") or {}
+        device_id = None
+        if isinstance(params, dict):
+            device_id = params.get("device")
+        if not device_id:
+            device_id = str(action.get("iot_node_id") or action.get("device_id") or "default")
+        device_id = str(device_id)
 
         async with self._lock:
             if device_id not in self._queues:
@@ -149,10 +155,21 @@ class ActionDispatcher:
         params = action.get("params") or action.get("parameters") or {}
         channel_key = action.get("channel_key", "relay:light")
 
+        target_name = None
+        if isinstance(params, dict):
+            target_name = params.get("device")
+        if not target_name:
+            target_name = device_id
+
+        params_to_dispatch = dict(params) if isinstance(params, dict) else {}
+        if "target_device" not in params_to_dispatch:
+            params_to_dispatch["target_device"] = target_name
+
         logger.info(
-            ">>> [DISPATCH] Executing '%s' on device '%s' (Action ID: %s)",
+            ">>> [DISPATCH] Executing '%s' on device '%s' (target: %s, Action ID: %s)",
             action_name,
             device_id,
+            target_name,
             action_id,
         )
 
@@ -168,7 +185,7 @@ class ActionDispatcher:
         while attempt <= self.max_retries and not success:
             try:
                 # Dispatch command via DeviceManager
-                result = await self.device_manager.dispatch(device_id, action_name, params)
+                result = await self.device_manager.dispatch(device_id, action_name, params_to_dispatch)
                 success = True
                 logger.info(
                     "<<< [SUCCESS] Device '%s' responded to '%s': %s",
