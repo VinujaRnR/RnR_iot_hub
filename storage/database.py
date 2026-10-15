@@ -56,8 +56,12 @@ class DatabaseManager:
         # Enable SQLite WAL mode, foreign keys, and busy timeouts
         await self._configure_pragmas()
 
-        # Initialize recommended schema
-        await self._init_schema()
+        # Initialize recommended schema (skipped gracefully if opened read-only)
+        try:
+            await self._init_schema()
+        except Exception as exc:
+            logger.debug("Schema initialization skipped (read-only database): %s", exc)
+
         logger.info("SQLite database connected with WAL mode at '%s'", self.db_path)
 
     async def close(self) -> None:
@@ -70,14 +74,20 @@ class DatabaseManager:
     async def _configure_pragmas(self) -> None:
         """Configures performance and consistency PRAGMAs."""
         assert self._conn is not None
-        async with self._conn.execute("PRAGMA journal_mode = WAL;") as cur:
-            row = await cur.fetchone()
-            journal_mode = row[0] if row else "unknown"
-            logger.debug("SQLite journal_mode set to: %s", journal_mode)
+        try:
+            async with self._conn.execute("PRAGMA journal_mode = WAL;") as cur:
+                row = await cur.fetchone()
+                journal_mode = row[0] if row else "unknown"
+                logger.debug("SQLite journal_mode set to: %s", journal_mode)
+        except Exception as exc:
+            logger.debug("PRAGMA journal_mode=WAL skipped (read-only database): %s", exc)
 
-        await self._conn.execute("PRAGMA synchronous = NORMAL;")
-        await self._conn.execute("PRAGMA foreign_keys = ON;")
-        await self._conn.execute("PRAGMA busy_timeout = 5000;")
+        try:
+            await self._conn.execute("PRAGMA synchronous = NORMAL;")
+            await self._conn.execute("PRAGMA foreign_keys = ON;")
+            await self._conn.execute("PRAGMA busy_timeout = 5000;")
+        except Exception as exc:
+            logger.debug("PRAGMA configuration skipped (read-only database): %s", exc)
 
     @asynccontextmanager
     async def transaction(self) -> AsyncGenerator[aiosqlite.Connection, None]:
