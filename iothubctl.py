@@ -710,6 +710,76 @@ async def cmd_backup(args: argparse.Namespace) -> int:
         await db.close()
 
 
+def _filter_actions_by_time(actions: List[Dict[str, Any]], time_arg: str) -> Tuple[List[Dict[str, Any]], str]:
+    """
+    Filters actions by time substring, range (e.g. 15:50-15:54 or 15.50-15.54),
+    or 'now'/'latest'. If no exact match, falls back to the nearest action at or before time_arg.
+    Returns (matches, description).
+    """
+    clean_arg = time_arg.strip().replace(".", ":").lower()
+
+    # 1. Range syntax: e.g. "15:50-15:54"
+    if "-" in clean_arg and not clean_arg.startswith("-"):
+        parts = clean_arg.split("-", 1)
+        start_t = parts[0].strip()
+        end_t = parts[1].strip()
+        if len(start_t) == 4 and start_t[1] == ":":
+            start_t = "0" + start_t
+        if len(end_t) == 4 and end_t[1] == ":":
+            end_t = "0" + end_t
+
+        matches = []
+        for a in actions:
+            sched_at = a.get("scheduled_at", "")
+            if "T" in sched_at:
+                t_part = sched_at.split("T")[1][:5]
+                if start_t <= t_part <= end_t:
+                    matches.append(a)
+        if matches:
+            return matches, f"between {start_t} and {end_t}"
+
+    # 2. 'now' / 'current' / 'latest'
+    if clean_arg in ("now", "current", "latest"):
+        now_dt = datetime.now()
+        now_hm = now_dt.strftime("%H:%M")
+        past_or_current = []
+        for a in actions:
+            sched_at = a.get("scheduled_at", "")
+            if "T" in sched_at:
+                t_part = sched_at.split("T")[1][:5]
+                if t_part <= now_hm:
+                    past_or_current.append(a)
+        if past_or_current:
+            latest_time = past_or_current[-1].get("scheduled_at", "").split("T")[1][:5]
+            matches = [a for a in past_or_current if latest_time in a.get("scheduled_at", "")]
+            return matches, f"most recent at/before current time ({latest_time})"
+
+    # 3. Direct substring match (e.g. "15:50")
+    matches = [a for a in actions if clean_arg in a.get("scheduled_at", "").lower()]
+    if matches:
+        return matches, f"at {clean_arg}"
+
+    # 4. Fallback: find nearest action at or before clean_arg
+    if ":" in clean_arg:
+        target_hm = clean_arg[:5]
+        if len(target_hm) == 4 and target_hm[1] == ":":
+            target_hm = "0" + target_hm
+        candidates = []
+        for a in actions:
+            sched_at = a.get("scheduled_at", "")
+            if "T" in sched_at:
+                t_part = sched_at.split("T")[1][:5]
+                if t_part <= target_hm:
+                    candidates.append((t_part, a))
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            nearest_hm = candidates[-1][0]
+            matches = [item[1] for item in candidates if item[0] == nearest_hm]
+            return matches, f"most recent active action at {nearest_hm} (before requested {clean_arg})"
+
+    return [], f"at {clean_arg}"
+
+
 # =====================================================================
 # Command: iothubctl schedules (list, show, load)
 # =====================================================================
@@ -767,13 +837,16 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
                 return 0
 
             actions = await repo.get_scheduled_actions(sched_id)
-            if getattr(args, "time", None):
-                target_time = str(args.time).strip()
-                matches = [a for a in actions if target_time in a.get("scheduled_at", "")]
+            time_filter = getattr(args, "time", None)
+            if getattr(args, "now", False) and not time_filter:
+                time_filter = "now"
+
+            if time_filter:
+                matches, desc = _filter_actions_by_time(actions, str(time_filter))
                 if not matches:
-                    print(f"\n{YELLOW}No actions found matching time '{target_time}' in schedule '{sched_id}'.{RESET}\n")
+                    print(f"\n{YELLOW}No actions found matching time '{time_filter}' in schedule '{sched_id}'.{RESET}\n")
                     return 1
-                print(f"\n{BOLD}{CYAN}Generated Device Command JSON ({sched_id} at {target_time}):{RESET}")
+                print(f"\n{BOLD}{CYAN}Generated Device Command JSON ({sched_id} {desc}):{RESET}")
                 print(f"{'='*70}")
                 for m in matches:
                     dev = m.get("device_id") or m.get("iot_node_id")
@@ -1016,7 +1089,8 @@ def build_parser() -> argparse.ArgumentParser:
     show_sched = sched_subs.add_parser("show", help="Show details or raw JSON of a schedule")
     show_sched.add_argument("schedule_id", nargs="?", default=None, help="Schedule ID (defaults to active schedule)")
     show_sched.add_argument("--raw", action="store_true", help="Print original raw JSON received from RabbitMQ")
-    show_sched.add_argument("--time", "-t", default=None, help="Filter and display the generated device command JSON for a specific time (e.g. 15:00)")
+    show_sched.add_argument("--time", "-t", default=None, help="Filter and display the generated device command JSON for a specific time or range (e.g. 15:50, 15.50-15.54, or now)")
+    show_sched.add_argument("--now", action="store_true", help="Display the device command JSON for current time or most recent action before it")
     load_sched = sched_subs.add_parser("load", help="Load and validate a local schedule JSON file")
     load_sched.add_argument("file", help="Path to schedule JSON file")
     pub_sched = sched_subs.add_parser("publish", help="Publish a schedule JSON file to RabbitMQ")
