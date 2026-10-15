@@ -417,3 +417,20 @@ def test_default_api_binding_configuration():
     """Verifies the API default host and port match the specification 127.0.0.1:8765."""
     assert API_HOST == "127.0.0.1"
     assert API_PORT == 8765
+
+
+@pytest.mark.asyncio
+async def test_send_device_command(tmp_path):
+    """Verifies POST /devices/{device_id}/command dispatches command to device."""
+    async with create_api_test_env(tmp_path) as env:
+        client = env["client"]
+        resp = await client.post(
+            "/devices/98a316e6b658/command",
+            json={"action": "LIGHTS_ON"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "SUCCESS"
+        assert data["device_id"] == "98a316e6b658"
+
+

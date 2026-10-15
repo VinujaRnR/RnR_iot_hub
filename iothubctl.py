@@ -474,8 +474,41 @@ async def cmd_config(args: argparse.Namespace) -> int:
         await db.close()
 
 
+async def _transmit_command(target_device: str, action_name: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Transmits command payload to target device via local API (if daemon active) or direct DeviceManager."""
+    cmd_payload: Dict[str, Any] = {"action": action_name}
+    if params:
+        cmd_payload["params"] = params
+
+    # 1. Try local management API first to avoid exclusive port access collision with active daemon
+    import urllib.request
+    import urllib.error
+    api_url = f"http://127.0.0.1:8765/devices/{target_device}/command"
+    try:
+        req_data = json.dumps(cmd_payload).encode("utf-8")
+        req = urllib.request.Request(
+            api_url,
+            data=req_data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            resp_json = json.loads(resp.read().decode("utf-8"))
+            return resp_json.get("result", {})
+    except Exception:
+        pass
+
+    # 2. Fallback to direct DeviceManager
+    from devices.device_manager import create_default_device_manager
+    mgr = create_default_device_manager()
+    dev = mgr.get_device(target_device)
+    if not dev:
+        raise ValueError(f"Device '{target_device}' not found in registry.")
+    return await mgr.dispatch(target_device, action_name, {"params": params} if params else {})
+
+
 # =====================================================================
-# Command: iothubctl devices (scan, enroll, list, unbind)
+# Command: iothubctl devices (scan, enroll, list, unbind, send)
 # =====================================================================
 async def cmd_devices(args: argparse.Namespace) -> int:
     db = get_db(args.db)
@@ -607,9 +640,36 @@ async def cmd_devices(args: argparse.Namespace) -> int:
             ok = await registry.unbind_device(args.mac)
             if ok:
                 print(f"{GREEN}[✓]{RESET} Device '{args.mac}' unbound from registry.")
-            else:
-                print(f"{YELLOW}[!]{RESET} Device '{args.mac}' not found in registry.")
-            return 0
+        elif sub == "send":
+            dev_target = args.target_device
+            action_name = args.action_name
+            params_dict = {}
+            if getattr(args, "params", None):
+                try:
+                    params_dict = json.loads(args.params)
+                except Exception as exc:
+                    print(f"{RED}Error parsing --params JSON: {exc}{RESET}")
+                    return 1
+
+            cmd_payload = {"action": action_name}
+            if params_dict:
+                cmd_payload["params"] = params_dict
+
+            print(f"\n{BOLD}{CYAN}Transmitting Command Payload to Device '{dev_target}'...{RESET}")
+            print(f"  {BOLD}Target Device:{RESET} {GREEN}{dev_target}{RESET}")
+            print(f"  {BOLD}Command Payload JSON:{RESET}")
+            print("  " + json.dumps(cmd_payload, indent=2).replace("\n", "\n  "))
+
+            try:
+                res = await _transmit_command(dev_target, action_name, params_dict)
+                print(f"\n {GREEN}[✓] Command Executed and Transmitted to Hardware Successfully!{RESET}")
+                print(f"  {BOLD}Hardware Port:{RESET} {res.get('port', '/dev/ttyUSB0')}")
+                print(f"  {BOLD}Hardware State:{RESET} {res.get('state', 'OK')}")
+                print()
+                return 0
+            except Exception as exc:
+                print(f"\n {RED}[✗] Failed to transmit command: {exc}{RESET}\n")
+                return 1
 
         return 0
     finally:
@@ -889,6 +949,56 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
             print()
             return 0
 
+        elif sub == "dispatch":
+            sched_id = args.schedule_id
+            if not sched_id:
+                schedules = await repo.list_schedules(status="ACTIVE")
+                if not schedules:
+                    schedules = await repo.list_schedules()
+                if not schedules:
+                    print(f"\n{YELLOW}No schedules found in database.{RESET}\n")
+                    return 1
+                sched_id = schedules[0]["schedule_id"]
+
+            actions = await repo.get_scheduled_actions(sched_id)
+            time_filter = getattr(args, "time", None)
+            if getattr(args, "now", False) and not time_filter:
+                time_filter = "now"
+
+            if not time_filter:
+                time_filter = "now"
+
+            matches, desc = _filter_actions_by_time(actions, str(time_filter))
+            if not matches:
+                print(f"\n{YELLOW}No actions found matching time '{time_filter}' in schedule '{sched_id}'.{RESET}\n")
+                return 1
+
+            print(f"\n{BOLD}{CYAN}Dispatching Scheduled Actions to Hardware ({sched_id} {desc}):{RESET}")
+            print(f"{'='*70}")
+            for m in matches:
+                dev = m.get("device_id") or m.get("iot_node_id") or "light_glow_1"
+                action_name = m.get("action")
+                p = m.get("params") or {}
+                cmd_payload = {"action": action_name}
+                if p:
+                    cmd_payload["params"] = p
+                print(f"  {BOLD}Scheduled At:{RESET}  {m.get('scheduled_at')}")
+                print(f"  {BOLD}Target Device:{RESET} {GREEN}{dev}{RESET}")
+                print(f"  {BOLD}Action:{RESET}        {BOLD}{action_name}{RESET}")
+                print(f"  {BOLD}Transmitted JSON Payload:{RESET}")
+                print("  " + json.dumps(cmd_payload, indent=2).replace("\n", "\n  "))
+                print(f"  {CYAN}Transmitting to Target Hardware Device...{RESET}")
+                try:
+                    res = await _transmit_command(dev, action_name, p)
+                    print(f"  {GREEN}[✓] Transmitted successfully!{RESET}")
+                    print(f"  {BOLD}Hardware Port:{RESET} {res.get('port', '/dev/ttyUSB0')}")
+                    print(f"  {BOLD}Hardware State:{RESET} {res.get('state', 'OK')}")
+                except Exception as exc:
+                    print(f"  {RED}[✗] Transmission failed: {exc}{RESET}")
+                print(f"{'-'*70}")
+            print()
+            return 0
+
         elif sub == "load":
             file_path = Path(args.file)
             if not file_path.exists():
@@ -1057,6 +1167,10 @@ def build_parser() -> argparse.ArgumentParser:
     enr_p.add_argument("--profile", default="plant_controller_v1", help="Device profile")
     unb_p = dev_subs.add_parser("unbind", help="Unbind an enrolled device")
     unb_p.add_argument("--mac", required=True, help="Device MAC to unbind")
+    send_p = dev_subs.add_parser("send", help="Send command payload directly to a target device")
+    send_p.add_argument("target_device", help="Target device name or ID (e.g. light_glow_1)")
+    send_p.add_argument("action_name", help="Action name to execute (e.g. LIGHT_ON, LIGHT_OFF)")
+    send_p.add_argument("--params", "-p", default=None, help="Optional action parameters as JSON string")
 
     # profiles
     prof_parser = subparsers.add_parser("profiles", help="Manage device profiles")
@@ -1091,6 +1205,10 @@ def build_parser() -> argparse.ArgumentParser:
     show_sched.add_argument("--raw", action="store_true", help="Print original raw JSON received from RabbitMQ")
     show_sched.add_argument("--time", "-t", default=None, help="Filter and display the generated device command JSON for a specific time or range (e.g. 15:50, 15.50-15.54, or now)")
     show_sched.add_argument("--now", action="store_true", help="Display the device command JSON for current time or most recent action before it")
+    disp_sched = sched_subs.add_parser("dispatch", help="Immediately dispatch a scheduled action to its target device")
+    disp_sched.add_argument("schedule_id", nargs="?", default=None, help="Schedule ID (defaults to active schedule)")
+    disp_sched.add_argument("--time", "-t", default=None, help="Scheduled time of the action to dispatch (e.g. 15:50, 15.50-15.54, or now)")
+    disp_sched.add_argument("--now", action="store_true", help="Dispatch the action scheduled for the current time or most recent before it")
     load_sched = sched_subs.add_parser("load", help="Load and validate a local schedule JSON file")
     load_sched.add_argument("file", help="Path to schedule JSON file")
     pub_sched = sched_subs.add_parser("publish", help="Publish a schedule JSON file to RabbitMQ")

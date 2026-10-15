@@ -348,6 +348,25 @@ def create_app(
         }
 
     # =========================================================================
+    # 5b. POST /devices/{device_id:path}/command - Transmit Command to Device
+    # =========================================================================
+    @app.post("/devices/{device_id:path}/command", summary="Send command payload to device")
+    async def send_device_command(device_id: str, payload: Dict[str, Any]):
+        """Executes action directly on physical or logical device."""
+        clean_id = unquote(device_id)
+        dev_mgr = get_dev_mgr()
+        action = payload.get("action")
+        if not action:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing 'action' in request body")
+        params = payload.get("params") or {}
+        try:
+            res = await dev_mgr.dispatch(clean_id, action, {"params": params} if params else {})
+            return {"status": "SUCCESS", "device_id": clean_id, "result": res}
+        except Exception as exc:
+            logger.error("Failed to execute command '%s' on '%s': %s", action, clean_id, exc)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+
+    # =========================================================================
     # 6. GET /schedules - Accepted Daily Schedules
     # =========================================================================
     @app.get("/schedules", summary="Accepted daily schedules")
