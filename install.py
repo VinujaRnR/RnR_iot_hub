@@ -228,6 +228,15 @@ class IoTInstaller:
         except KeyError:
             log_warn("Supplementary group 'dialout' not found on system. Skipping.")
 
+        # 4. Add invoking sudo user to 'iothub' group so they can use iothubctl without sudo
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user and sudo_user != "root":
+            try:
+                self.run_cmd(["usermod", "-a", "-G", "iothub", sudo_user])
+                log_ok(f"Added user '{sudo_user}' to 'iothub' supplementary group (for iothubctl CLI access).")
+            except Exception as e:
+                log_warn(f"Could not add '{sudo_user}' to 'iothub' group: {e}")
+
     def create_directory_structure(self):
         """Creates the required directory tree with appropriate security permissions."""
         log_step("Creating directory hierarchy")

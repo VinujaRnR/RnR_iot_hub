@@ -18,7 +18,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 import pytest
 import zoneinfo
 
@@ -26,7 +26,7 @@ from config import SCHEDULE_TIMEZONE
 from storage.database import DatabaseManager
 from storage.schedule_repository import ScheduleRepository
 from storage.event_outbox import EventOutbox
-from devices.device_manager import DeviceManager
+from devices.device_manager import DeviceManager, create_default_device_manager
 from devices.mock_device import MockLedActuator
 from devices.arduino_nano import ArduinoNanoDevice
 from scheduler.action_dispatcher import ActionDispatcher
@@ -93,6 +93,46 @@ async def test_step10_device_driver_handshake_and_duplicate_suppression():
     res2 = await nano.execute_command("STATUS", {"command_id": "test-cmd-123"})
     assert res2["status"] == "SUCCESS"
     assert res2.get("duplicate") is True
+
+
+@pytest.mark.asyncio
+async def test_command_json_no_topic_and_light_glow_1():
+    """Verify command JSON contains NO 'topic', formats 'params' correctly, and device is light_glow_1."""
+    nano = ArduinoNanoDevice(port="/dev/ttyUSB0", device_id="light_glow_1", name="light_glow_1")
+    assert nano.device_id == "light_glow_1"
+    assert nano.name == "light_glow_1"
+
+    # Mock _ensure_port_open and serial write
+    mock_serial = MagicMock()
+    with patch.object(nano, "_ensure_port_open", return_value=mock_serial):
+        # 1. Action with params: should contain action and params, NO topic
+        res = await nano.execute_command("change_size", {
+            "params": {"shoulder": 0.3, "bust": None, "waist": None, "hip": None}
+        })
+        cmd = res["command"]
+        assert "topic" not in cmd
+        assert cmd["action"] == "change_size"
+        assert cmd["params"] == {"shoulder": 0.3, "bust": None, "waist": None, "hip": None}
+
+        # 2. Action without params: should omit 'params' key completely, NO topic
+        res2 = await nano.execute_command("LIGHTS_ON", {})
+        cmd2 = res2["command"]
+        assert "topic" not in cmd2
+        assert cmd2["action"] == "LIGHTS_ON"
+        assert "params" not in cmd2
+
+    # Verify create_default_device_manager registers light_glow_1
+    mgr = create_default_device_manager()
+    dev = mgr.get_device("light_glow_1")
+    assert dev is not None
+    assert dev.device_id == "light_glow_1"
+    assert dev.name == "light_glow_1"
+
+    # Aliases resolve to light_glow_1
+    for alias in ["/dev/ttyUSB0", "ttyUSB0", "98a316e6b658", "3417ebc3b479", "C45BBE6DF6A9"]:
+        resolved = mgr.get_device(alias)
+        assert resolved is not None
+        assert resolved.device_id == "light_glow_1"
 
 
 # =====================================================================

@@ -77,9 +77,8 @@ class ArduinoNanoDevice:
         Executes actions on physical device over serial.
         Formats and transmits JSON command:
         {
-          "topic": "devices/<device_id>/commands",
           "action": "<action>",
-          "params": { ... }  # omitted if empty
+          "params": { ... }  # omitted if empty or null
         }
         Also maintains backward compatibility by asserting raw pulses ('1', '0', 'v', 'c')
         for simple microcontrollers.
@@ -129,21 +128,21 @@ class ArduinoNanoDevice:
         # Extract parameters for command payload
         if "params" in parameters and isinstance(parameters["params"], dict):
             clean_params = dict(parameters["params"])
+        elif "params" in parameters and parameters["params"] is None:
+            clean_params = {}
         else:
             clean_params = {
                 k: v for k, v in parameters.items()
-                if k not in ("target_device", "command_id", "action_id", "state")
+                if k not in ("target_device", "command_id", "action_id", "state", "params", "device")
             }
 
         # Build command payload matching exact specification:
         # {
-        #   "topic": "devices/C45BBE6DF6A9/commands",
         #   "action": "change_size",
         #   "params": { ... }
         # }
-        # If no params, omit the "params" key entirely.
+        # Note: Must NOT contain "topic". If no params, omit the "params" key entirely.
         cmd_payload: Dict[str, Any] = {
-            "topic": f"devices/{target_dev}/commands",
             "action": action,
         }
         if clean_params:

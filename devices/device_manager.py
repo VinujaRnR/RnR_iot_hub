@@ -85,14 +85,14 @@ def create_default_device_manager() -> DeviceManager:
     # Register physical Arduino Nano on /dev/ttyUSB0
     try:
         from devices.arduino_nano import ArduinoNanoDevice
-        nano = ArduinoNanoDevice(port="/dev/ttyUSB0", device_id="/dev/ttyUSB0")
+        nano = ArduinoNanoDevice(port="/dev/ttyUSB0", device_id="light_glow_1", name="light_glow_1")
         manager.register_device(nano)
-        manager.register_alias("98a316e6b658", "/dev/ttyUSB0")
-        manager.register_alias("3417ebc3b479", "/dev/ttyUSB0")
-        manager.register_alias("C45BBE6DF6A9", "/dev/ttyUSB0")
-        manager.register_alias("light_glow_1", "/dev/ttyUSB0")
-        manager.register_alias("light_glow_2", "/dev/ttyUSB0")
-        manager.register_alias("ttyUSB0", "/dev/ttyUSB0")
+        manager.register_alias("/dev/ttyUSB0", "light_glow_1")
+        manager.register_alias("ttyUSB0", "light_glow_1")
+        manager.register_alias("98a316e6b658", "light_glow_1")
+        manager.register_alias("3417ebc3b479", "light_glow_1")
+        manager.register_alias("C45BBE6DF6A9", "light_glow_1")
+        manager.register_alias("light_glow_2", "light_glow_1")
     except Exception as exc:
         logger.warning("Could not register Arduino Nano: %s", exc)
 
