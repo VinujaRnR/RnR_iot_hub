@@ -726,7 +726,7 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
                 return 1
 
             content = file_path.read_text(encoding="utf-8")
-            from ingestion.validator import ScheduleValidator
+            from ingestion.schedule_validator import ScheduleValidator
             from ingestion.schedule_normalizer import ScheduleNormalizer
             val = ScheduleValidator()
             norm = ScheduleNormalizer()
