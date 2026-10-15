@@ -42,7 +42,14 @@ BOLD = "\033[1m"
 DIM = "\033[2m"
 RESET = "\033[0m"
 
-from config import DATABASE_PATH, HUB_ID, API_HOST, API_PORT
+from config import (
+    DATABASE_PATH,
+    HUB_ID,
+    API_HOST,
+    API_PORT,
+    COMMAND_EXCHANGE,
+    COMMAND_ROUTING_KEY,
+)
 from storage.database import DatabaseManager
 from storage.config_repository import ConfigRepository
 from storage.schedule_repository import ScheduleRepository
@@ -738,6 +745,71 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
             print(f"\n{GREEN}[✓]{RESET} Successfully loaded schedule '{validated.schedule_id}' (rev {validated.revision}) with {len(normalized)} action(s).\n")
             return 0
 
+        elif sub == "publish":
+            file_path = Path(getattr(args, "file", None) or "schedule.json")
+            if not file_path.exists():
+                print(f"\n{RED}Error: Schedule file '{file_path}' does not exist.{RESET}\n")
+                return 1
+
+            content = file_path.read_text(encoding="utf-8")
+            try:
+                payload = json.loads(content)
+            except Exception as e:
+                print(f"\n{RED}Error: Invalid JSON in '{file_path}': {e}{RESET}\n")
+                return 1
+
+            if getattr(args, "today", False):
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                payload["date"] = today_str
+                if "hub_id" in payload:
+                    payload["schedule_id"] = f"{payload['hub_id']}-{today_str}"
+                content = json.dumps(payload, indent=2)
+
+            cfg = ConfigRepository(db)
+            db_host = await cfg.get_setting("rabbitmq.host")
+            db_port = await cfg.get_setting("rabbitmq.port")
+            db_user = await cfg.get_setting("rabbitmq.username")
+            stored_pw = await cfg.get_setting("rabbitmq.password")
+
+            host = db_host or RABBITMQ_HOST
+            port = int(db_port) if db_port else RABBITMQ_AMQP_PORT
+            user = db_user or RABBITMQ_USER
+            pw = stored_pw or RABBITMQ_PASSWORD
+            sch = "amqps" if RABBITMQ_USE_SSL else "amqp"
+            vh = quote(RABBITMQ_VHOST.lstrip("/"), safe="") if RABBITMQ_VHOST.lstrip("/") else ""
+            t_url = f"{sch}://{quote(user, safe='')}:{quote(pw, safe='')}@{host}:{port}/{vh}"
+
+            import aio_pika
+            print(f"\n{BOLD}{CYAN}Publishing Schedule JSON to RabbitMQ Broker...{RESET}")
+            print(f"{'='*60}")
+            print(f" Broker:      {host}:{port}")
+            print(f" Exchange:    {COMMAND_EXCHANGE}")
+            print(f" Routing Key: {COMMAND_ROUTING_KEY}")
+            print(f" Schedule ID: {payload.get('schedule_id', 'unknown')}")
+            print(f" Target Date: {payload.get('date', 'unknown')}")
+            print(f" File:        {file_path} ({len(content)} bytes)")
+            print(f"{'='*60}")
+
+            try:
+                conn = await aio_pika.connect_robust(t_url)
+                async with conn:
+                    channel = await conn.channel()
+                    exchange = await channel.get_exchange(COMMAND_EXCHANGE, ensure=False)
+                    msg = aio_pika.Message(
+                        body=content.encode("utf-8"),
+                        content_type="application/json",
+                        delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+                    )
+                    await exchange.publish(msg, routing_key=COMMAND_ROUTING_KEY)
+                    print(f"\n{GREEN}[✓] Schedule successfully published to RabbitMQ!{RESET}")
+                    print(f" ==> The running iothubd daemon will ingest, validate, and store it in SQLite.")
+                    print(f" ==> Check live daemon logs: {BOLD}sudo journalctl -u iothubd.service -f{RESET}\n")
+            except Exception as exc:
+                print(f"\n{RED}[✗] Failed to publish schedule to RabbitMQ: {exc}{RESET}\n")
+                return 1
+
+            return 0
+
         return 0
     finally:
         await db.close()
@@ -840,7 +912,7 @@ def build_parser() -> argparse.ArgumentParser:
     rmq_subs.add_parser("last", help="Inspect the most recent incoming RabbitMQ message/schedule")
 
     # schedules
-    sched_parser = subparsers.add_parser("schedules", help="View daily schedules and inspect actions")
+    sched_parser = subparsers.add_parser("schedules", aliases=["schedule"], help="View daily schedules and inspect actions")
     sched_subs = sched_parser.add_subparsers(dest="schedule_action")
     sched_subs.add_parser("list", help="List all stored daily schedules")
     show_sched = sched_subs.add_parser("show", help="Show details or raw JSON of a schedule")
@@ -848,6 +920,9 @@ def build_parser() -> argparse.ArgumentParser:
     show_sched.add_argument("--raw", action="store_true", help="Print original raw JSON received from RabbitMQ")
     load_sched = sched_subs.add_parser("load", help="Load and validate a local schedule JSON file")
     load_sched.add_argument("file", help="Path to schedule JSON file")
+    pub_sched = sched_subs.add_parser("publish", help="Publish a schedule JSON file to RabbitMQ")
+    pub_sched.add_argument("file", nargs="?", default="schedule.json", help="Path to schedule JSON file (default: schedule.json)")
+    pub_sched.add_argument("--today", action="store_true", help="Automatically update schedule date to today's date")
 
     # actions
     act_parser = subparsers.add_parser("actions", help="Inspect scheduled actions and execution history")
@@ -965,6 +1040,7 @@ def main():
         "doctor": cmd_doctor,
         "rabbitmq": cmd_rabbitmq,
         "schedules": cmd_schedules,
+        "schedule": cmd_schedules,
         "actions": cmd_actions,
         "config": cmd_config,
         "devices": cmd_devices,
