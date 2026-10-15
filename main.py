@@ -143,6 +143,34 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
         report.future_pending_count,
     )
 
+    # 4b. Auto-load cached last_rabbitmq_message if database currently has no active schedules
+    try:
+        active_scheds = await schedule_repo.list_schedules(status="ACTIVE")
+        if not active_scheds:
+            for last_msg_path in ("/var/lib/iothub/last_rabbitmq_message.json", "/tmp/last_rabbitmq_message.json"):
+                if os.path.exists(last_msg_path):
+                    import json
+                    from ingestion.schedule_validator import ScheduleValidator
+                    from ingestion.schedule_normalizer import ScheduleNormalizer
+                    with open(last_msg_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    payload = meta.get("payload", {})
+                    raw_body = meta.get("raw_body", "")
+                    val = ScheduleValidator().validate(payload)
+                    norm = ScheduleNormalizer().normalize(payload)
+                    if norm:
+                        await schedule_repo.save_schedule_with_actions(
+                            schedule_id=val.schedule_id,
+                            date=val.date,
+                            revision=val.revision,
+                            actions=norm,
+                            raw_json=raw_body,
+                        )
+                        logger.info("[INIT] Automatically imported cached schedule '%s' with %d actions from %s", val.schedule_id, len(norm), last_msg_path)
+                        break
+    except Exception as auto_err:
+        logger.debug("[INIT] Auto-import of cached schedule skipped: %s", auto_err)
+
     # 5. Initialize Publisher with Durable Outbox
     logger.info("[INIT] Starting RabbitMQ Publisher and Outbox Worker...")
     publisher = RabbitMQPublisher(outbox=event_outbox)
