@@ -703,6 +703,29 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
                 return 0
 
             actions = await repo.get_scheduled_actions(sched_id)
+            if getattr(args, "time", None):
+                target_time = str(args.time).strip()
+                matches = [a for a in actions if target_time in a.get("scheduled_at", "")]
+                if not matches:
+                    print(f"\n{YELLOW}No actions found matching time '{target_time}' in schedule '{sched_id}'.{RESET}\n")
+                    return 1
+                print(f"\n{BOLD}{CYAN}Generated Device Command JSON ({sched_id} at {target_time}):{RESET}")
+                print(f"{'='*70}")
+                for m in matches:
+                    dev = m.get("device_id") or m.get("iot_node_id")
+                    cmd = {"action": m.get("action")}
+                    p = m.get("params") or {}
+                    if p:
+                        cmd["params"] = p
+                    print(f"  {BOLD}Scheduled At:{RESET}  {m.get('scheduled_at')}")
+                    print(f"  {BOLD}Target Device:{RESET} {GREEN}{dev}{RESET} ({m.get('channel_key')})")
+                    print(f"  {BOLD}Status:{RESET}        {m.get('status')}")
+                    print(f"  {BOLD}Command Payload Transmitted to Hardware:{RESET}")
+                    print("  " + json.dumps(cmd, indent=2).replace("\n", "\n  "))
+                    print(f"{'-'*70}")
+                print()
+                return 0
+
             print(f"\n{BOLD}{CYAN}Schedule Details: {sched_id}{RESET}")
             print(f"{'='*70}")
             print(f"  {BOLD}Date:{RESET}       {sched['date']}")
@@ -922,6 +945,7 @@ def build_parser() -> argparse.ArgumentParser:
     show_sched = sched_subs.add_parser("show", help="Show details or raw JSON of a schedule")
     show_sched.add_argument("schedule_id", nargs="?", default=None, help="Schedule ID (defaults to active schedule)")
     show_sched.add_argument("--raw", action="store_true", help="Print original raw JSON received from RabbitMQ")
+    show_sched.add_argument("--time", "-t", default=None, help="Filter and display the generated device command JSON for a specific time (e.g. 15:00)")
     load_sched = sched_subs.add_parser("load", help="Load and validate a local schedule JSON file")
     load_sched.add_argument("file", help="Path to schedule JSON file")
     pub_sched = sched_subs.add_parser("publish", help="Publish a schedule JSON file to RabbitMQ")
