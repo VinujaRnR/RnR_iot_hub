@@ -93,6 +93,7 @@ class ScheduleEngine:
         self._loop_task: Optional[asyncio.Task] = None
         self._watcher_task: Optional[asyncio.Task] = None
         self._wake_event = asyncio.Event()
+        self._watcher_wake_event = asyncio.Event()
         self._simulated_time: Optional[str] = None
         self._last_device_states: Dict[str, str] = {}
 
@@ -133,6 +134,7 @@ class ScheduleEngine:
 
         self._running = False
         self._wake_event.set()
+        self._watcher_wake_event.set()
 
         if self._watcher_task:
             self._watcher_task.cancel()
@@ -218,7 +220,11 @@ class ScheduleEngine:
                     if not current_action:
                         # Schedule has not started yet today
                         wait_dur = 60.0 if self._simulated_time is None else min(0.1, self.poll_interval)
-                        await asyncio.sleep(wait_dur)
+                        try:
+                            await asyncio.wait_for(self._watcher_wake_event.wait(), timeout=wait_dur)
+                            self._watcher_wake_event.clear()
+                        except asyncio.TimeoutError:
+                            pass
                         continue
 
                     dev_key = str(current_action.get("device_id") or current_action.get("iot_node_id") or "light_glow_1")
@@ -262,7 +268,12 @@ class ScheduleEngine:
             except Exception as exc:
                 logger.error("Error in 60s schedule watcher loop: %s", exc, exc_info=True)
 
-            await asyncio.sleep(60.0)
+            wait_dur = 60.0 if self._simulated_time is None else min(0.1, self.poll_interval)
+            try:
+                await asyncio.wait_for(self._watcher_wake_event.wait(), timeout=wait_dur)
+                self._watcher_wake_event.clear()
+            except asyncio.TimeoutError:
+                pass
 
 
     def notify_schedule_updated(self) -> None:
@@ -270,7 +281,9 @@ class ScheduleEngine:
         Signals the scheduler loop that a new schedule has been imported,
         waking it up immediately without waiting for the next polling interval.
         """
+        self._last_device_states.clear()
         self._wake_event.set()
+        self._watcher_wake_event.set()
 
     async def scheduler_loop(self) -> None:
         """
@@ -295,10 +308,23 @@ class ScheduleEngine:
                 # 2. Queue claimed actions to per-device dispatcher on state change
                 if due_actions:
                     logger.info("Claimed %d due action(s) at UTC %s", len(due_actions), now)
+                    # Deduplicate within batch: if multiple due actions exist for the same device,
+                    # keep only the latest one to prevent rapid flapping of historical actions.
+                    latest_due_per_device: Dict[str, Dict[str, Any]] = {}
                     for action in due_actions:
                         dev_key = str(action.get("device_id") or action.get("iot_node_id") or "default")
+                        latest_due_per_device[dev_key] = action
+
+                    for action in due_actions:
+                        dev_key = str(action.get("device_id") or action.get("iot_node_id") or "default")
+                        if action is not latest_due_per_device[dev_key]:
+                            # Historical action superseded by a later action in this batch
+                            await self.schedule_repo.update_action_status(
+                                action["schedule_id"], action["action_id"], "COMPLETED"
+                            )
+                            continue
+
                         act_name = action.get("action", "").strip().upper()
-                        
                         desired_st = None
                         if act_name in ("LIGHTS_ON", "LIGHT_ON", "ON"):
                             desired_st = "ON"
@@ -316,6 +342,9 @@ class ScheduleEngine:
                                 act_name,
                                 dev_key,
                                 desired_st,
+                            )
+                            await self.schedule_repo.update_action_status(
+                                action["schedule_id"], action["action_id"], "COMPLETED"
                             )
                             continue
 

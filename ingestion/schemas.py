@@ -198,13 +198,20 @@ class DailyProductionSchedule(BaseModel):
     @classmethod
     def normalize_incoming_schedule_payload(cls, data: Any) -> Any:
         if isinstance(data, dict):
+            po_data = data.get("production_order")
             # 1. Default timezone if missing
             data.setdefault("timezone", data.get("timezone") or "Asia/Kolkata")
 
             # 2. Extract or default date
-            po_data = data.get("production_order")
-            start_date = po_data.get("start_date") if isinstance(po_data, dict) else None
-            date = data.get("date") or start_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            # If payload explicitly provides a date, use it; otherwise default to today's local date
+            # rather than the order's historical start_date (which could be weeks in the past).
+            tz_str = data.get("timezone") or "Asia/Kolkata"
+            try:
+                today_local = datetime.now(zoneinfo.ZoneInfo(tz_str)).strftime("%Y-%m-%d")
+            except Exception:
+                today_local = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+            date = data.get("date") or today_local
             data.setdefault("date", date)
 
             # 3. Default hub_id and schedule_id

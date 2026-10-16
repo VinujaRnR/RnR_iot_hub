@@ -89,48 +89,20 @@ class ScheduleRepository:
         raw_hash = hashlib.sha256(raw_json.encode("utf-8")).hexdigest() if raw_json else "nohash"
 
         async with self.db.transaction() as conn:
-            # 1. Check existing revision if any
-            async with conn.execute("SELECT revision FROM schedules WHERE schedule_id = ?", (schedule_id,)) as cur:
-                existing = await cur.fetchone()
-                if existing and revision < existing["revision"]:
-                    raise ValueError(
-                        f"Cannot save schedule '{schedule_id}' with revision {revision} "
-                        f"because a newer revision ({existing['revision']}) already exists."
-                    )
+            # 1. When a new schedule is received, remove all previous schedules and actions from the database
+            await conn.execute("DELETE FROM scheduled_actions")
+            await conn.execute("DELETE FROM schedules")
 
-            # 2. Insert or update top-level schedule
+            # 2. Insert the new active schedule
             await conn.execute(
                 """
                 INSERT INTO schedules (schedule_id, date, revision, status, raw_json_hash, raw_json, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(schedule_id) DO UPDATE SET
-                    date = excluded.date,
-                    revision = excluded.revision,
-                    status = excluded.status,
-                    raw_json_hash = excluded.raw_json_hash,
-                    raw_json = excluded.raw_json,
-                    updated_at = excluded.updated_at
+                VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?)
                 """,
-                (schedule_id, date, revision, status, raw_hash, raw_json, now, now),
+                (schedule_id, date, revision, raw_hash, raw_json, now, now),
             )
 
-            # If this schedule is ACTIVE, mark all other schedules as SUPERSEDED
-            if status == "ACTIVE":
-                await conn.execute(
-                    "UPDATE schedules SET status = 'SUPERSEDED' WHERE schedule_id != ? AND status = 'ACTIVE'",
-                    (schedule_id,),
-                )
-
-            # 3. Preserve status and execution time of existing actions (e.g. COMPLETED or EXECUTING)
-            async with conn.execute(
-                "SELECT action_id, scheduled_at, action, status, executed_at FROM scheduled_actions WHERE schedule_id = ?",
-                (schedule_id,),
-            ) as cur:
-                existing_actions = {r["action_id"]: dict(r) for r in await cur.fetchall()}
-
-            await conn.execute("DELETE FROM scheduled_actions WHERE schedule_id = ?", (schedule_id,))
-
-            # 4. Insert all actions, carrying forward completed/in-flight states only if time and action match
+            # 3. Insert all actions fresh with PENDING status
             for act in actions:
                 if hasattr(act, "to_dict"):
                     act_dict = act.to_dict()
@@ -140,21 +112,8 @@ class ScheduleRepository:
                     act_dict = dict(act)
 
                 act_id = str(act_dict.get("action_id"))
-                existing_state = existing_actions.get(act_id)
-                sched_at_val = str(act_dict.get("scheduled_at"))
-                act_name_val = str(act_dict.get("action"))
-
-                if (
-                    existing_state
-                    and existing_state["status"] in ("COMPLETED", "EXECUTING", "SKIPPED_UNSAFE", "SKIPPED_IDEMPOTENT")
-                    and existing_state.get("scheduled_at") == sched_at_val
-                    and existing_state.get("action") == act_name_val
-                ):
-                    act_status = existing_state["status"]
-                    act_executed_at = existing_state.get("executed_at")
-                else:
-                    act_status = str(act_dict.get("status", "PENDING"))
-                    act_executed_at = act_dict.get("executed_at")
+                act_status = "PENDING"
+                act_executed_at = None
 
                 dev_number = act_dict.get("device_number")
                 try:

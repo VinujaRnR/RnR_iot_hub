@@ -155,8 +155,12 @@ class ScheduleNormalizer:
             return []
 
         # Extract top-level metadata
-        schedule_date = payload.get("date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         schedule_tz = payload.get("timezone") or self.default_timezone
+        try:
+            today_local = datetime.now(zoneinfo.ZoneInfo(schedule_tz)).strftime("%Y-%m-%d")
+        except Exception:
+            today_local = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        schedule_date = payload.get("date") or today_local
         hub_id = payload.get("hub_id") or self.default_hub_id
         schedule_id = payload.get("schedule_id") or f"{hub_id}-{schedule_date}"
 

@@ -403,7 +403,7 @@ async def test_schedule_superseding_and_action_replacement(temp_db_file):
 
     s1_updated = await repo.get_schedule("hub-01-2026-10-14")
     s2 = await repo.get_schedule("hub-01-2026-10-16")
-    assert s1_updated["status"] == "SUPERSEDED"
+    assert s1_updated is None
     assert s2["status"] == "ACTIVE"
 
     active_scheds = await repo.list_schedules(status="ACTIVE")

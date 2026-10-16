@@ -211,14 +211,16 @@ sudo iothubctl schedules watch --once
 ```
 > **Note:** The `iothubd` systemd service natively runs this 60s automated watcher continuously in the background.
 
-### 5. Load and Replace Local Schedules
+### 5. Load and Apply Schedules
 ```bash
+# Apply the most recently received RabbitMQ schedule to SQLite and trigger hardware
+sudo iothubctl schedules apply-last
+sudo iothubctl rabbitmq apply
+
 # Load and validate a local schedule file into SQLite
 sudo iothubctl schedules load schedule.json
-
-# Force replace an existing schedule and increment revision
-sudo iothubctl schedules load schedule.json --replace --bump-revision
 ```
+> **Schedule Replacement Rule:** Whenever a new schedule is received from RabbitMQ or loaded via CLI, all previous schedule data is cleanly wiped from SQLite and replaced with the new schedule and its actions set fresh to `PENDING`. The 60-second watcher immediately evaluates the current time slot and actuates the target device accordingly.
 
 ### 6. Publish Schedule to RabbitMQ
 Publishes schedule JSON to the broker exchange (`iot_commands`), automatically updating the date to today and auto-incrementing revisions:
@@ -241,7 +243,6 @@ sudo iothubctl actions list
 # Filter actions by lifecycle state
 sudo iothubctl actions list --status PENDING
 sudo iothubctl actions list --status COMPLETED
-sudo iothubctl actions list --status SUPERSEDED
 ```
 
 ### 8. RabbitMQ Broker Diagnostics
@@ -251,12 +252,10 @@ sudo iothubctl rabbitmq test
 
 # Inspect the most recent message received from RabbitMQ
 sudo iothubctl rabbitmq last
-```
 
-**Revision & Replacement Rules:**
-* **Exact Duplicate Protection:** Identical schedules delivered repeatedly with the same SHA-256 payload hash are acknowledged and ignored without re-triggering physical relays.
-* **Automatic Schedule Replacement:** If a schedule with modified content is published, the hub automatically detects the changed content hash, auto-increments the revision, marks older schedules as `SUPERSEDED`, and applies the new actions.
-* **Smart Action Reset:** Actions modified in time or operation reset to `PENDING` to ensure execution, while unchanged completed actions remain preserved.
+# Immediately apply the last received RabbitMQ schedule to the database and hardware
+sudo iothubctl rabbitmq apply
+```
 
 ---
 

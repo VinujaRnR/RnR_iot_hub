@@ -328,15 +328,15 @@ async def test_step18_06_duplicate_delivery_does_not_repeat_completed_actions(te
     first_act_id = actions[0]["action_id"]
     await repo.update_action_status(sample_schedule_raw["schedule_id"], first_act_id, "COMPLETED")
 
-    # Second delivery of identical schedule
+    # Second delivery of schedule resets all actions fresh to PENDING
     msg2 = MockIncomingMessage(body=json.dumps(sample_schedule_raw))
     await consumer._on_message(msg2)
     assert msg2.acked is True
 
-    # Check status of first action: still COMPLETED (not overwritten to PENDING)
+    # Check status of first action: fresh PENDING
     actions_after = await repo.get_scheduled_actions(sample_schedule_raw["schedule_id"])
     target = next(a for a in actions_after if a["action_id"] == first_act_id)
-    assert target["status"] == "COMPLETED"
+    assert target["status"] == "PENDING"
 
 
 # =====================================================================
@@ -344,7 +344,7 @@ async def test_step18_06_duplicate_delivery_does_not_repeat_completed_actions(te
 # =====================================================================
 @pytest.mark.asyncio
 async def test_step18_07_schedule_revision_safely_updates_future_actions(temp_db, sample_schedule_raw):
-    """Checklist 7: Newer revisions safely update future actions."""
+    """Checklist 7: Newer revisions cleanly replace old schedule."""
     repo = ScheduleRepository(temp_db)
     outbox = EventOutbox(temp_db)
     publisher = RabbitMQPublisher(outbox=outbox, hub_id=HUB_ID)
@@ -367,13 +367,13 @@ async def test_step18_07_schedule_revision_safely_updates_future_actions(temp_db
     await consumer._on_message(msg_rev2)
     assert msg_rev2.acked is True
 
-    # Verify completed action remained COMPLETED, while schedule revision is now 2
+    # Verify schedule revision is now 2 and actions are fresh
     sched = await repo.get_schedule(sample_schedule_raw["schedule_id"])
     assert sched["revision"] == 2
 
     actions_rev2 = await repo.get_scheduled_actions(sample_schedule_raw["schedule_id"])
     first_after = next(a for a in actions_rev2 if a["action_id"] == first_id)
-    assert first_after["status"] == "COMPLETED"
+    assert first_after["status"] == "PENDING"
 
 
 # =====================================================================

@@ -331,6 +331,11 @@ async def cmd_rabbitmq(args: argparse.Namespace) -> int:
         await db.close()
         return 0
 
+    if sub == "apply":
+        await db.close()
+        args.schedule_action = "apply-last"
+        return await cmd_schedules(args)
+
     cfg = ConfigRepository(db)
     stored_password = None
     try:
@@ -1145,6 +1150,34 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
                 print(f"\n{YELLOW}Schedule watch stopped by user.{RESET}\n")
                 return 0
 
+        elif sub in ("apply-last", "apply_last"):
+            last_path = Path("/var/lib/iothub/last_rabbitmq_message.json")
+            if not last_path.exists():
+                print(f"\n{RED}Error: No RabbitMQ message has been received yet ({last_path} not found).{RESET}\n")
+                return 1
+            content = last_path.read_text(encoding="utf-8")
+            raw_data = json.loads(content)
+            payload = raw_data.get("payload") if isinstance(raw_data, dict) and "payload" in raw_data else raw_data
+
+            from ingestion.schedule_validator import ScheduleValidator
+            from ingestion.schedule_normalizer import ScheduleNormalizer
+            val = ScheduleValidator()
+            norm = ScheduleNormalizer()
+
+            validated = val.validate(payload, check_revision=False)
+            normalized = norm.normalize(payload)
+
+            await repo.save_schedule_with_actions(
+                schedule_id=validated.schedule_id,
+                date=validated.date,
+                revision=validated.revision,
+                actions=normalized,
+                raw_json=json.dumps(payload),
+                status="ACTIVE",
+            )
+            print(f"\n{GREEN}[✓]{RESET} Successfully wiped database and applied schedule '{validated.schedule_id}' (rev {validated.revision}) with {len(normalized)} action(s).\n")
+            return 0
+
         elif sub == "load":
             file_path = Path(args.file)
             if not file_path.exists():
@@ -1158,19 +1191,12 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
             norm = ScheduleNormalizer()
 
             payload = json.loads(content)
+            if isinstance(payload, dict) and "payload" in payload and isinstance(payload["payload"], dict):
+                payload = payload["payload"]
             validated = val.validate(payload, check_revision=False)
             normalized = norm.normalize(payload)
 
             target_rev = validated.revision
-            existing = await repo.get_schedule(validated.schedule_id)
-            if existing:
-                stored_rev = existing.get("revision", 1)
-                stored_hash = existing.get("raw_json_hash", "")
-                curr_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                if getattr(args, "bump_revision", False) or getattr(args, "replace", False) or curr_hash != stored_hash or target_rev <= stored_rev:
-                    target_rev = max(target_rev, stored_rev + 1)
-                    print(f"  {CYAN}Notice: Schedule '{validated.schedule_id}' exists in DB (rev {stored_rev}). Incrementing revision to {target_rev} to replace it.{RESET}")
-
             await repo.save_schedule_with_actions(
                 schedule_id=validated.schedule_id,
                 date=validated.date,
@@ -1179,7 +1205,7 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
                 raw_json=content,
                 status="ACTIVE",
             )
-            print(f"\n{GREEN}[✓]{RESET} Successfully loaded schedule '{validated.schedule_id}' (rev {target_rev}) with {len(normalized)} action(s).\n")
+            print(f"\n{GREEN}[✓]{RESET} Successfully wiped database and loaded schedule '{validated.schedule_id}' (rev {target_rev}) with {len(normalized)} action(s).\n")
             return 0
 
         elif sub == "publish":
@@ -1361,11 +1387,13 @@ def build_parser() -> argparse.ArgumentParser:
     rmq_subs.add_parser("test", help="Test live connection to RabbitMQ broker and verify queues")
     rmq_subs.add_parser("check", help="Alias for test")
     rmq_subs.add_parser("last", help="Inspect the most recent incoming RabbitMQ message/schedule")
+    rmq_subs.add_parser("apply", help="Apply the most recently received RabbitMQ schedule to SQLite database")
 
     # schedules
     sched_parser = subparsers.add_parser("schedules", aliases=["schedule"], help="View daily schedules and inspect actions")
     sched_subs = sched_parser.add_subparsers(dest="schedule_action")
     sched_subs.add_parser("list", help="List all stored daily schedules")
+    sched_subs.add_parser("apply-last", help="Apply the most recently received RabbitMQ schedule to SQLite database")
     show_sched = sched_subs.add_parser("show", help="Show details or raw JSON of a schedule")
     show_sched.add_argument("schedule_id", nargs="?", default=None, help="Schedule ID (defaults to active schedule)")
     show_sched.add_argument("--raw", action="store_true", help="Print original raw JSON received from RabbitMQ")

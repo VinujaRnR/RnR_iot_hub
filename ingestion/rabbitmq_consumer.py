@@ -307,14 +307,9 @@ class RabbitMQConsumer:
         schedule_id = payload.get("schedule_id", "unknown")
         revision = payload.get("revision", 1)
 
-        # Step 3: Validate JSON
+        # Step 3: Validate JSON (revision check disabled to allow immediate unconstrained replacement)
         try:
-            validated_schedule = self.validator.validate(payload, check_revision=True)
-        except ScheduleRevisionError as re:
-            logger.warning("Duplicate/stale schedule revision ignored: %s", re)
-            # Acknowledge to remove redundant message from queue
-            await self._safe_ack(message)
-            return
+            validated_schedule = self.validator.validate(payload, check_revision=False)
         except ScheduleValidationError as ve:
             logger.error("Schedule validation failed for '%s': %s. Rejecting...", schedule_id, ve)
             if self.db:
@@ -328,45 +323,19 @@ class RabbitMQConsumer:
             await self._safe_reject(message, requeue=False)
             return
 
-        # Check SQLite repository for existing revision (persists across restarts)
-        if self.schedule_repo:
+        # Cache last received message payload to disk for fast CLI inspection/re-apply (skip during automated pytest runs)
+        if os.environ.get("PYTEST_CURRENT_TEST") is None and getattr(message, "routing_key", "") != "test":
             try:
-                existing = await self.schedule_repo.get_schedule(validated_schedule.schedule_id)
-                if existing:
-                    stored_rev = existing.get("revision", 1)
-                    stored_hash = existing.get("raw_json_hash", "")
-                    curr_hash = hashlib.sha256(raw_body.encode("utf-8")).hexdigest()
-
-                    if validated_schedule.revision < stored_rev:
-                        logger.warning(
-                            "Schedule '%s' revision %d is older than database revision %d. Skipping stale.",
-                            validated_schedule.schedule_id,
-                            validated_schedule.revision,
-                            stored_rev,
-                        )
-                        await self._safe_ack(message)
-                        return
-                    elif validated_schedule.revision == stored_rev:
-                        if stored_hash and curr_hash == stored_hash:
-                            logger.info(
-                                "Schedule '%s' revision %d already persisted with identical hash. Skipping duplicate.",
-                                validated_schedule.schedule_id,
-                                validated_schedule.revision,
-                            )
-                            await self._safe_ack(message)
-                            return
-                        else:
-                            # Content changed! Auto-bump the revision to replace the schedule cleanly.
-                            new_rev = stored_rev + 1
-                            logger.info(
-                                "Schedule '%s' content changed with same revision %d. Auto-bumping revision to %d to replace saved schedule.",
-                                validated_schedule.schedule_id,
-                                validated_schedule.revision,
-                                new_rev,
-                            )
-                            validated_schedule.revision = new_rev
-            except Exception as exc:
-                logger.error("Error checking existing schedule in SQLite: %s", exc)
+                with open("/var/lib/iothub/last_rabbitmq_message.json", "w", encoding="utf-8") as lf:
+                    json.dump({
+                        "received_at": datetime.now(timezone.utc).isoformat(),
+                        "routing_key": getattr(message, "routing_key", "schedule"),
+                        "detected_type": "SCHEDULE",
+                        "raw_body": raw_body,
+                        "payload": payload,
+                    }, lf, indent=2)
+            except Exception:
+                pass
 
         # Step 4 & 5: Normalize device actions
         try:
