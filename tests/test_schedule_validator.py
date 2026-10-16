@@ -372,3 +372,57 @@ def test_empty_schedule_rejected(validator):
     with pytest.raises(MalformedScheduleError) as exc:
         validator.validate(payload)
     assert "must contain at least one scheduled action" in str(exc.value)
+
+
+def test_revision_content_change_allowed(validator):
+    payload_original = {
+        "schema_version": 1,
+        "schedule_id": "sched_update_test",
+        "hub_id": "hub-01",
+        "revision": 1,
+        "date": "2026-10-12",
+        "timezone": "Asia/Kolkata",
+        "schedules": [
+            {
+                "time": "10:00",
+                "action": "set_led",
+                "channel_key": "led",
+                "params": {},
+                "sub_resource": "sub1",
+                "iot_node_id": "iot_001",
+            }
+        ],
+    }
+
+    # First validation succeeds
+    res1 = validator.validate(payload_original)
+    assert res1.schedule_id == "sched_update_test"
+
+    # Same revision, identical content -> rejected as duplicate
+    with pytest.raises(ScheduleRevisionError):
+        validator.validate(payload_original)
+
+    # Same revision, modified content (action time changed) -> accepted as modified update!
+    payload_modified = {
+        "schema_version": 1,
+        "schedule_id": "sched_update_test",
+        "hub_id": "hub-01",
+        "revision": 1,
+        "date": "2026-10-12",
+        "timezone": "Asia/Kolkata",
+        "schedules": [
+            {
+                "time": "11:30",
+                "action": "set_led",
+                "channel_key": "led",
+                "params": {},
+                "sub_resource": "sub1",
+                "iot_node_id": "iot_001",
+            }
+        ],
+    }
+    res2 = validator.validate(payload_modified)
+    assert res2.schedule_id == "sched_update_test"
+    actions = res2.extract_all_actions()
+    assert actions[0].time == "11:30"
+

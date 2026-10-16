@@ -14,6 +14,7 @@ Follows the ingestion pipeline:
 
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -331,15 +332,39 @@ class RabbitMQConsumer:
         if self.schedule_repo:
             try:
                 existing = await self.schedule_repo.get_schedule(validated_schedule.schedule_id)
-                if existing and validated_schedule.revision <= existing["revision"]:
-                    logger.warning(
-                        "Schedule '%s' revision %d already persisted in database (stored revision: %d). Skipping duplicate.",
-                        validated_schedule.schedule_id,
-                        validated_schedule.revision,
-                        existing["revision"],
-                    )
-                    await self._safe_ack(message)
-                    return
+                if existing:
+                    stored_rev = existing.get("revision", 1)
+                    stored_hash = existing.get("raw_json_hash", "")
+                    curr_hash = hashlib.sha256(raw_body.encode("utf-8")).hexdigest()
+
+                    if validated_schedule.revision < stored_rev:
+                        logger.warning(
+                            "Schedule '%s' revision %d is older than database revision %d. Skipping stale.",
+                            validated_schedule.schedule_id,
+                            validated_schedule.revision,
+                            stored_rev,
+                        )
+                        await self._safe_ack(message)
+                        return
+                    elif validated_schedule.revision == stored_rev:
+                        if stored_hash and curr_hash == stored_hash:
+                            logger.info(
+                                "Schedule '%s' revision %d already persisted with identical hash. Skipping duplicate.",
+                                validated_schedule.schedule_id,
+                                validated_schedule.revision,
+                            )
+                            await self._safe_ack(message)
+                            return
+                        else:
+                            # Content changed! Auto-bump the revision to replace the schedule cleanly.
+                            new_rev = stored_rev + 1
+                            logger.info(
+                                "Schedule '%s' content changed with same revision %d. Auto-bumping revision to %d to replace saved schedule.",
+                                validated_schedule.schedule_id,
+                                validated_schedule.revision,
+                                new_rev,
+                            )
+                            validated_schedule.revision = new_rev
             except Exception as exc:
                 logger.error("Error checking existing schedule in SQLite: %s", exc)
 

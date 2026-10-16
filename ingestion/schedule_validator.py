@@ -13,6 +13,7 @@ Enforces business rules:
 """
 
 from __future__ import annotations
+import hashlib
 import json
 import logging
 from typing import Any, Dict, List, Optional, Set
@@ -94,22 +95,49 @@ class ScheduleRevisionTracker:
 
     def __init__(self):
         self._revisions: Dict[str, int] = {}
+        self._hashes: Dict[str, str] = {}
 
-    def is_duplicate_or_stale(self, schedule_id: str, revision: int) -> bool:
-        """Returns True if the incoming revision is less than or equal to the processed revision."""
+    def is_duplicate_or_stale(
+        self,
+        schedule_id: str,
+        revision: int,
+        content_hash: Optional[str] = None,
+    ) -> bool:
+        """
+        Returns True if the incoming schedule is duplicate or stale.
+        - If revision is strictly less than processed revision: stale (True).
+        - If revision is strictly greater than processed revision: new revision (False).
+        - If revision is equal:
+            - If content_hash is provided and differs from stored hash: content was updated (False).
+            - Otherwise: exact duplicate (True).
+        """
         if schedule_id in self._revisions:
-            return revision <= self._revisions[schedule_id]
+            last_rev = self._revisions[schedule_id]
+            if revision < last_rev:
+                return True
+            if revision == last_rev:
+                if content_hash is not None and schedule_id in self._hashes:
+                    return content_hash == self._hashes[schedule_id]
+                return True
         return False
 
-    def record_revision(self, schedule_id: str, revision: int) -> None:
-        """Records the latest processed revision for a schedule."""
+    def record_revision(
+        self,
+        schedule_id: str,
+        revision: int,
+        content_hash: Optional[str] = None,
+    ) -> None:
+        """Records the latest processed revision and optional content hash for a schedule."""
         self._revisions[schedule_id] = revision
+        if content_hash:
+            self._hashes[schedule_id] = content_hash
 
     def get_last_revision(self, schedule_id: str) -> Optional[int]:
         return self._revisions.get(schedule_id)
 
     def reset(self) -> None:
         self._revisions.clear()
+        self._hashes.clear()
 
 
 class ScheduleValidator:
@@ -138,20 +166,23 @@ class ScheduleValidator:
         Validates raw payload (JSON string, bytes, or dict).
         Returns validated DailyProductionSchedule or raises ScheduleValidationError.
         """
-        # 1. Parse JSON
+        # 1. Parse JSON and compute content hash
         if isinstance(raw_data, (bytes, bytearray)):
             try:
-                raw_data = raw_data.decode("utf-8")
+                raw_str = raw_data.decode("utf-8")
+                payload_dict = json.loads(raw_str)
+                content_hash = hashlib.sha256(raw_data).hexdigest()
             except Exception as exc:
                 raise MalformedScheduleError(f"Failed to decode message bytes as utf-8: {exc}") from exc
-
-        if isinstance(raw_data, str):
+        elif isinstance(raw_data, str):
             try:
                 payload_dict = json.loads(raw_data)
+                content_hash = hashlib.sha256(raw_data.encode("utf-8")).hexdigest()
             except json.JSONDecodeError as exc:
                 raise MalformedScheduleError(f"Malformed JSON in schedule payload: {exc}") from exc
         elif isinstance(raw_data, dict):
             payload_dict = raw_data
+            content_hash = hashlib.sha256(json.dumps(payload_dict, sort_keys=True).encode("utf-8")).hexdigest()
         else:
             raise MalformedScheduleError(f"Invalid payload type: {type(raw_data).__name__}. Expected dict or JSON string")
 
@@ -177,7 +208,7 @@ class ScheduleValidator:
 
         # 4. Revision tracking & de-duplication
         if check_revision:
-            if self.revision_tracker.is_duplicate_or_stale(schedule.schedule_id, schedule.revision):
+            if self.revision_tracker.is_duplicate_or_stale(schedule.schedule_id, schedule.revision, content_hash):
                 last_rev = self.revision_tracker.get_last_revision(schedule.schedule_id)
                 raise ScheduleRevisionError(
                     f"Stale or duplicate schedule: schedule '{schedule.schedule_id}' revision {schedule.revision} "
@@ -189,9 +220,9 @@ class ScheduleValidator:
         for idx, act in enumerate(actions):
             self._validate_action(act, idx)
 
-        # 6. If all checks pass, record revision
+        # 6. If all checks pass, record revision and content hash
         if check_revision:
-            self.revision_tracker.record_revision(schedule.schedule_id, schedule.revision)
+            self.revision_tracker.record_revision(schedule.schedule_id, schedule.revision, content_hash)
 
         logger.info(
             "Schedule '%s' (rev %d, date %s) validated successfully with %d action(s)",

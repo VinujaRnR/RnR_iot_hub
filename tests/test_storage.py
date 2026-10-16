@@ -351,3 +351,89 @@ async def test_devices_and_alerts_persistence(temp_db_file):
     assert alerts[0]["message"] == "System clock drift detected"
 
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_schedule_superseding_and_action_replacement(temp_db_file):
+    """Verifies that new active schedules supersede old ones and action changes are cleanly replaced."""
+    db = DatabaseManager(db_path=temp_db_file)
+    await db.connect()
+    repo = ScheduleRepository(db)
+
+    # 1. Save initial schedule
+    act1 = NormalizedActionRecord(
+        schedule_id="hub-01-2026-10-14",
+        action_id="act-01",
+        iot_node_id="light_glow_1",
+        scheduled_at="2026-10-14T08:00:00+05:30",
+        action="LIGHT_ON",
+        channel_key="relay:light",
+        status="PENDING",
+    )
+    await repo.save_schedule_with_actions(
+        schedule_id="hub-01-2026-10-14",
+        date="2026-10-14",
+        revision=1,
+        actions=[act1],
+        status="ACTIVE",
+    )
+    # Mark act-01 as completed
+    await repo.update_action_status("hub-01-2026-10-14", "act-01", "COMPLETED")
+
+    s1 = await repo.get_schedule("hub-01-2026-10-14")
+    assert s1["status"] == "ACTIVE"
+
+    # 2. Save a new schedule for a new date -> should supersede old schedule
+    act2 = NormalizedActionRecord(
+        schedule_id="hub-01-2026-10-16",
+        action_id="act-02",
+        iot_node_id="light_glow_1",
+        scheduled_at="2026-10-16T08:00:00+05:30",
+        action="LIGHT_OFF",
+        channel_key="relay:light",
+        status="PENDING",
+    )
+    await repo.save_schedule_with_actions(
+        schedule_id="hub-01-2026-10-16",
+        date="2026-10-16",
+        revision=1,
+        actions=[act2],
+        status="ACTIVE",
+    )
+
+    s1_updated = await repo.get_schedule("hub-01-2026-10-14")
+    s2 = await repo.get_schedule("hub-01-2026-10-16")
+    assert s1_updated["status"] == "SUPERSEDED"
+    assert s2["status"] == "ACTIVE"
+
+    active_scheds = await repo.list_schedules(status="ACTIVE")
+    assert len(active_scheds) == 1
+    assert active_scheds[0]["schedule_id"] == "hub-01-2026-10-16"
+
+    # 3. Modify an action's time or operation in the current schedule -> should reset to PENDING
+    act2_modified = NormalizedActionRecord(
+        schedule_id="hub-01-2026-10-16",
+        action_id="act-02",
+        iot_node_id="light_glow_1",
+        scheduled_at="2026-10-16T10:00:00+05:30",  # Changed time!
+        action="LIGHT_OFF",
+        channel_key="relay:light",
+        status="PENDING",
+    )
+    # Even if act-02 was previously completed:
+    await repo.update_action_status("hub-01-2026-10-16", "act-02", "COMPLETED")
+
+    # Saving modified action with revision 2
+    await repo.save_schedule_with_actions(
+        schedule_id="hub-01-2026-10-16",
+        date="2026-10-16",
+        revision=2,
+        actions=[act2_modified],
+        status="ACTIVE",
+    )
+    actions = await repo.get_scheduled_actions("hub-01-2026-10-16")
+    assert len(actions) == 1
+    assert actions[0]["status"] == "PENDING"  # Reset to PENDING because time changed!
+
+    await db.close()
+

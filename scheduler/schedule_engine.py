@@ -199,7 +199,13 @@ class ScheduleEngine:
                         if "T" in sched_at:
                             try:
                                 sched_dt = datetime.fromisoformat(sched_at).astimezone(tz)
-                                if sched_dt <= now_dt:
+                                if sched_dt.date() == now_dt.date():
+                                    is_past_or_curr = (sched_dt <= now_dt)
+                                else:
+                                    t_part = sched_at.split("T")[1][:5]
+                                    is_past_or_curr = (t_part <= now_hm)
+
+                                if is_past_or_curr:
                                     past_or_current.append(a)
                                 else:
                                     future_actions.append(a)

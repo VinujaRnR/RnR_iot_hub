@@ -114,16 +114,23 @@ class ScheduleRepository:
                 (schedule_id, date, revision, status, raw_hash, raw_json, now, now),
             )
 
+            # If this schedule is ACTIVE, mark all other schedules as SUPERSEDED
+            if status == "ACTIVE":
+                await conn.execute(
+                    "UPDATE schedules SET status = 'SUPERSEDED' WHERE schedule_id != ? AND status = 'ACTIVE'",
+                    (schedule_id,),
+                )
+
             # 3. Preserve status and execution time of existing actions (e.g. COMPLETED or EXECUTING)
             async with conn.execute(
-                "SELECT action_id, status, executed_at FROM scheduled_actions WHERE schedule_id = ?",
+                "SELECT action_id, scheduled_at, action, status, executed_at FROM scheduled_actions WHERE schedule_id = ?",
                 (schedule_id,),
             ) as cur:
                 existing_actions = {r["action_id"]: dict(r) for r in await cur.fetchall()}
 
             await conn.execute("DELETE FROM scheduled_actions WHERE schedule_id = ?", (schedule_id,))
 
-            # 4. Insert all actions, carrying forward completed/in-flight states for existing action IDs
+            # 4. Insert all actions, carrying forward completed/in-flight states only if time and action match
             for act in actions:
                 if hasattr(act, "to_dict"):
                     act_dict = act.to_dict()
@@ -134,7 +141,15 @@ class ScheduleRepository:
 
                 act_id = str(act_dict.get("action_id"))
                 existing_state = existing_actions.get(act_id)
-                if existing_state and existing_state["status"] in ("COMPLETED", "EXECUTING", "SKIPPED_UNSAFE", "SKIPPED_IDEMPOTENT"):
+                sched_at_val = str(act_dict.get("scheduled_at"))
+                act_name_val = str(act_dict.get("action"))
+
+                if (
+                    existing_state
+                    and existing_state["status"] in ("COMPLETED", "EXECUTING", "SKIPPED_UNSAFE", "SKIPPED_IDEMPOTENT")
+                    and existing_state.get("scheduled_at") == sched_at_val
+                    and existing_state.get("action") == act_name_val
+                ):
                     act_status = existing_state["status"]
                     act_executed_at = existing_state.get("executed_at")
                 else:
@@ -296,7 +311,7 @@ class ScheduleRepository:
         if status:
             query += " WHERE status = ?"
             params.append(status)
-        query += " ORDER BY date DESC, revision DESC"
+        query += " ORDER BY date DESC, revision DESC, updated_at DESC"
 
         async with self.db.connection.execute(query, params) as cur:
             rows = await cur.fetchall()

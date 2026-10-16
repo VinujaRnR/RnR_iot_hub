@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import hashlib
 import json
 import os
 import shutil
@@ -1157,17 +1158,28 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
             norm = ScheduleNormalizer()
 
             payload = json.loads(content)
-            validated = val.validate(payload)
+            validated = val.validate(payload, check_revision=False)
             normalized = norm.normalize(payload)
+
+            target_rev = validated.revision
+            existing = await repo.get_schedule(validated.schedule_id)
+            if existing:
+                stored_rev = existing.get("revision", 1)
+                stored_hash = existing.get("raw_json_hash", "")
+                curr_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                if getattr(args, "bump_revision", False) or getattr(args, "replace", False) or curr_hash != stored_hash or target_rev <= stored_rev:
+                    target_rev = max(target_rev, stored_rev + 1)
+                    print(f"  {CYAN}Notice: Schedule '{validated.schedule_id}' exists in DB (rev {stored_rev}). Incrementing revision to {target_rev} to replace it.{RESET}")
 
             await repo.save_schedule_with_actions(
                 schedule_id=validated.schedule_id,
                 date=validated.date,
-                revision=validated.revision,
+                revision=target_rev,
                 actions=normalized,
                 raw_json=content,
+                status="ACTIVE",
             )
-            print(f"\n{GREEN}[✓]{RESET} Successfully loaded schedule '{validated.schedule_id}' (rev {validated.revision}) with {len(normalized)} action(s).\n")
+            print(f"\n{GREEN}[✓]{RESET} Successfully loaded schedule '{validated.schedule_id}' (rev {target_rev}) with {len(normalized)} action(s).\n")
             return 0
 
         elif sub == "publish":
@@ -1189,6 +1201,15 @@ async def cmd_schedules(args: argparse.Namespace) -> int:
                 if "hub_id" in payload:
                     payload["schedule_id"] = f"{payload['hub_id']}-{today_str}"
                 content = json.dumps(payload, indent=2)
+
+            sched_id = payload.get("schedule_id", "")
+            if sched_id:
+                existing = await repo.get_schedule(sched_id)
+                if existing and (getattr(args, "bump_revision", False) or payload.get("revision", 1) <= existing.get("revision", 1)):
+                    new_rev = existing.get("revision", 1) + 1
+                    payload["revision"] = new_rev
+                    content = json.dumps(payload, indent=2)
+                    print(f"  {CYAN}Notice: Schedule '{sched_id}' exists in DB (rev {existing.get('revision', 1)}). Auto-incremented revision to {new_rev} for publication.{RESET}")
 
             cfg = ConfigRepository(db)
             db_host = await cfg.get_setting("rabbitmq.host")
@@ -1361,9 +1382,12 @@ def build_parser() -> argparse.ArgumentParser:
     watch_sched.add_argument("--once", action="store_true", help="Run a single check and exit immediately")
     load_sched = sched_subs.add_parser("load", help="Load and validate a local schedule JSON file")
     load_sched.add_argument("file", help="Path to schedule JSON file")
+    load_sched.add_argument("--replace", "-r", action="store_true", help="Force replace existing schedule in database")
+    load_sched.add_argument("--bump-revision", "-b", action="store_true", help="Explicitly increment revision number")
     pub_sched = sched_subs.add_parser("publish", help="Publish a schedule JSON file to RabbitMQ")
     pub_sched.add_argument("file", nargs="?", default="schedule.json", help="Path to schedule JSON file (default: schedule.json)")
     pub_sched.add_argument("--today", action="store_true", help="Automatically update schedule date to today's date")
+    pub_sched.add_argument("--bump-revision", "-b", action="store_true", help="Explicitly increment revision number when republishing")
 
     # actions
     act_parser = subparsers.add_parser("actions", help="Inspect scheduled actions and execution history")
