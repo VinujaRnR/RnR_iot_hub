@@ -5,7 +5,9 @@
  * Target Board: ESP8266 D1 / D1 Mini (or generic ESP8266)
  *
  * Channel Mapping:
- * - Light: Mapped to LED_BUILTIN (typically GPIO 2 / D4), Active-Low
+ * - Light: Relay on D5 (GPIO 14), polarity set by RELAY_ACTIVE_LOW
+ *          Mirrored by the indicator LED on LED_BUILTIN (GPIO 2 / D4),
+ *          polarity set by LIGHT_ACTIVE_LOW (Active-Low)
  * - Valve: Mapped to Digital Pin D1 (GPIO 5), configurable Active-High / Active-Low
  *
  * Protocol & Features:
@@ -14,14 +16,14 @@
  * - Supported Channels: ["relay:light", "relay:valve"]
  * - Supported Actions: ["LIGHTS_ON", "LIGHTS_OFF", "VALVE_ON", "VALVE_OFF", "VALVE_OPEN", "VALVE_CLOSE", "STATUS"]
  * - JSON Command Parsing: Stack-based string inspection (zero dynamic heap allocations)
- * - Physical Execution: Drives LED_BUILTIN and Valve digital pins with independent logic polarities
+ * - Physical Execution: Drives the light relay, indicator LED and Valve digital pins with independent logic polarities
  * - EEPROM Persistence: Persists both light and valve states across reboots using ESP8266 flash EEPROM emulation
  * - Duplicate Command Handling: Deduplicates matching command IDs
  * - Backward Compatibility: Accepts single-char & CLI commands:
  *     '1' / '0' -> Light ON / OFF
  *     'v' / 'c' -> Valve ON (open) / OFF (close)
  *     '?'       -> Query states (LIGHT & VALVE)
- *     'b'       -> Diagnostic blink (LED_BUILTIN 5 times)
+ *     'b'       -> Diagnostic blink (indicator LED 5 times, light relay unaffected)
  * - Watchdog Safe: Yields control in main loop to prevent ESP8266 WDT resets
  */
 
@@ -35,7 +37,10 @@
 #ifndef LED_BUILTIN
   #define LED_BUILTIN 2
 #endif
-const uint8_t PIN_LIGHT = LED_BUILTIN;
+const uint8_t PIN_INDICATOR = LED_BUILTIN;
+
+// Light relay connected to D5 (GPIO 14)
+const uint8_t PIN_LIGHT = 14;
 
 // Valve connected to Digital Pin D1 (GPIO 5 on ESP8266 D1 / D1 Mini)
 #ifdef D1
@@ -45,8 +50,11 @@ const uint8_t PIN_LIGHT = LED_BUILTIN;
 #endif
 
 // Logic polarities:
-// ESP8266 onboard LED is typically Active-Low (LOW = ON, HIGH = OFF)
+// ESP8266 onboard LED (PIN_INDICATOR) is typically Active-Low (LOW = ON, HIGH = OFF)
 const bool LIGHT_ACTIVE_LOW = true;
+
+// Light relay (PIN_LIGHT) logic: false = Active-High module (HIGH = ON, LOW = OFF), true = Active-Low (LOW = ON)
+const bool RELAY_ACTIVE_LOW = false;
 
 // Valve relay logic: false = Active-High (HIGH = ON/Open, LOW = OFF/Closed), true = Active-Low
 const bool VALVE_ACTIVE_LOW = false;
@@ -81,20 +89,35 @@ byte g_rx_len = 0;
 // =====================================================================
 void applyLightState(bool turn_on) {
   g_light_state = turn_on;
-  int pin_level;
+
+  // Indicator LED (mirrors the light state)
+  int indicator_level;
   if (LIGHT_ACTIVE_LOW) {
-    pin_level = turn_on ? LOW : HIGH;
+    indicator_level = turn_on ? LOW : HIGH;
   } else {
-    pin_level = turn_on ? HIGH : LOW;
+    indicator_level = turn_on ? HIGH : LOW;
   }
-  digitalWrite(PIN_LIGHT, pin_level);
+  digitalWrite(PIN_INDICATOR, indicator_level);
+
+  // Light relay (own polarity: RELAY_ACTIVE_LOW = false -> HIGH is ON, LOW is OFF)
+  int light_level;
+  if (RELAY_ACTIVE_LOW) {
+    light_level = turn_on ? LOW : HIGH;
+  } else {
+    light_level = turn_on ? HIGH : LOW;
+  }
+  digitalWrite(PIN_LIGHT, light_level);
 
   Serial.print(F("[DEBUG] Light -> "));
   Serial.print(turn_on ? F("ON") : F("OFF"));
-  Serial.print(F(" (Pin "));
+  Serial.print(F(" (Indicator Pin "));
+  Serial.print(PIN_INDICATOR);
+  Serial.print(F(" = "));
+  Serial.print(indicator_level == LOW ? F("LOW") : F("HIGH"));
+  Serial.print(F(", Light Pin "));
   Serial.print(PIN_LIGHT);
   Serial.print(F(" = "));
-  Serial.print(pin_level == LOW ? F("LOW") : F("HIGH"));
+  Serial.print(light_level == LOW ? F("LOW") : F("HIGH"));
   Serial.println(F(")"));
 
   // Persist state in EEPROM if changed
@@ -157,18 +180,19 @@ void initEEPROM() {
   }
 }
 
+// Diagnostic blink only toggles the indicator LED; the light relay is left untouched.
 void blinkDiagnostic() {
   Serial.println(F("[DEBUG] Starting 5-blink diagnostic routine..."));
+  int on_level  = LIGHT_ACTIVE_LOW ? LOW : HIGH;
+  int off_level = LIGHT_ACTIVE_LOW ? HIGH : LOW;
   for (int i = 0; i < 5; i++) {
-    int on_level  = LIGHT_ACTIVE_LOW ? LOW : HIGH;
-    int off_level = LIGHT_ACTIVE_LOW ? HIGH : LOW;
-    digitalWrite(PIN_LIGHT, on_level);
+    digitalWrite(PIN_INDICATOR, on_level);
     delay(400);
-    digitalWrite(PIN_LIGHT, off_level);
+    digitalWrite(PIN_INDICATOR, off_level);
     delay(400);
   }
-  // Restore saved light state
-  applyLightState(g_light_state);
+  // Restore indicator to the saved light state (light relay was never changed)
+  digitalWrite(PIN_INDICATOR, g_light_state ? on_level : off_level);
   Serial.println(F("[DEBUG] Diagnostic blink complete, restored saved state."));
 }
 
@@ -289,7 +313,7 @@ void processBuffer(const char* line) {
     return;
   }
 
-  // Diagnostic blink (built-in LED)
+  // Diagnostic blink (indicator LED)
   if (strcasecmp(line, "b") == 0 || strcasecmp(line, "blink") == 0) {
     Serial.println(F("[DEBUG] Command matched: BLINK (CLI)"));
     Serial.println(F("OK:BLINKING_5_TIMES"));
@@ -400,18 +424,25 @@ void setup() {
   Serial.print(F("[DEBUG] Board Model: ")); Serial.println(BOARD_TYPE);
   Serial.print(F("[DEBUG] Hardware ID (Node): ")); Serial.println(NODE_ID);
   Serial.print(F("[DEBUG] Firmware Version: ")); Serial.println(FIRMWARE_VER);
-  Serial.print(F("[DEBUG] Light Pin: ")); Serial.print(PIN_LIGHT);
+  Serial.print(F("[DEBUG] Indicator Pin: ")); Serial.print(PIN_INDICATOR);
   Serial.print(F(" (Active-")); Serial.print(LIGHT_ACTIVE_LOW ? F("LOW") : F("HIGH"));
+  Serial.print(F("), Light Pin: ")); Serial.print(PIN_LIGHT);
+  Serial.print(F(" (Active-")); Serial.print(RELAY_ACTIVE_LOW ? F("LOW") : F("HIGH"));
   Serial.print(F("), Valve Pin: ")); Serial.print(PIN_VALVE);
   Serial.print(F(" (Active-")); Serial.print(VALVE_ACTIVE_LOW ? F("LOW") : F("HIGH"));
   Serial.println(F(")"));
   Serial.println(F("========================================"));
 
+  // Restore persisted states first, so the light pin can be set to its
+  // final level before it becomes an output (keeps the relay from clicking).
+  initEEPROM();
+
+  int initial_light_level = RELAY_ACTIVE_LOW ? (g_light_state ? LOW : HIGH) : (g_light_state ? HIGH : LOW);
+  digitalWrite(PIN_LIGHT, initial_light_level);
   pinMode(PIN_LIGHT, OUTPUT);
+  pinMode(PIN_INDICATOR, OUTPUT);
   pinMode(PIN_VALVE, OUTPUT);
 
-  // Initialize EEPROM and restore persisted states
-  initEEPROM();
   applyLightState(g_light_state);
   applyValveState(g_valve_state);
 
