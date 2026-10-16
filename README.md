@@ -99,7 +99,13 @@ Scanning USB serial interfaces...
       USB Serial:  1420
 ```
 
-### 2. Enroll Device into SQLite Registry
+### 2. Auto-configure Connected Devices
+Automatically detects USB serial adapters and registers logical device aliases (`light_glow_1`, `/dev/ttyUSB0`):
+```bash
+sudo iothubctl devices autoconfigure
+```
+
+### 3. Enroll Device into SQLite Registry
 ```bash
 sudo iothubctl devices enroll \
   --mac 98a316e6b658 \
@@ -109,12 +115,25 @@ sudo iothubctl devices enroll \
 ```
 *(Omit flags to run interactively with prompts).*
 
-### 3. List Registered Devices
+### 4. List Registered Devices
 ```bash
 sudo iothubctl devices list
 ```
 
-### 4. Remove a Device Binding
+### 5. Send Direct Hardware Commands
+Send framed JSON command payloads directly to a target hardware device to test actuation:
+```bash
+# Turn light ON
+sudo iothubctl devices send light_glow_1 LIGHT_ON
+
+# Turn light OFF
+sudo iothubctl devices send light_glow_1 LIGHT_OFF
+
+# Execute command with parameters
+sudo iothubctl devices send light_glow_1 LIGHT_ON --params '{"intensity": 80}'
+```
+
+### 6. Remove a Device Binding
 ```bash
 sudo iothubctl devices unbind --mac 98a316e6b658
 ```
@@ -139,18 +158,105 @@ sudo iothubctl profiles show plant_controller_v1
 
 ---
 
-## 6. Daily Scheduling & Policies
+## 6. Daily Production Schedules & Automated Execution
 
-The daemon accepts daily schedules (e.g., [schedule.json](file:///home/rnr_hub/Documents/iot_hub/RnR_iot_hub/schedule.json)) via RabbitMQ or manual load:
+The hub accepts daily production schedules (e.g., [schedule.json](file:///home/rnr_hub/Documents/iot_hub/RnR_iot_hub/schedule.json)) ingested via RabbitMQ or loaded manually. The background daemon (`iothubd`) runs a 24/7 automated 60-second schedule watcher loop to track time slots and actuate hardware on state changes.
 
+### 1. View Schedule Status & Listings
 ```bash
-# View active schedule, pending jobs, and status
+# View overall hub status and current active schedule
 sudo iothubctl status
+
+# List all stored daily schedules (ACTIVE vs SUPERSEDED)
+sudo iothubctl schedules list
 ```
 
-**Idempotency & Revision Rules:**
-* Identical schedules delivered repeatedly are acknowledged and ignored without re-triggering physical relays.
-* Higher schedule revisions (`revision: 2`) safely update future pending actions while strictly preserving already-completed actions.
+### 2. Inspect Schedule Details & Command Payloads
+```bash
+# Inspect all actions and timing for the active schedule
+sudo iothubctl schedules show
+
+# Inspect original raw JSON payload received from RabbitMQ
+sudo iothubctl schedules show --raw
+
+# Inspect the exact command JSON payload generated for the current time slot
+sudo iothubctl schedules show --now
+
+# Filter generated command JSON for a specific time or time range
+sudo iothubctl schedules show --time 15:50
+sudo iothubctl schedules show --time 15.50-15.54
+```
+
+### 3. Dispatch Scheduled Actions to Hardware
+Immediately executes the scheduled action for the target time slot directly to physical hardware:
+```bash
+# Dispatch the action scheduled for the current time
+sudo iothubctl schedules dispatch --now
+
+# Dispatch an action for a specific time
+sudo iothubctl schedules dispatch --time 16:30
+```
+
+### 4. Automated 60-Second Schedule Watcher
+Continuously monitors the active schedule every 60 seconds against the local clock, detects action state changes (e.g., `OFF` -> `ON`), and transmits the command JSON payload to the hardware:
+```bash
+# Watch schedule live and track state changes
+sudo iothubctl schedules watch
+
+# Watch schedule for a specific target device with custom interval
+sudo iothubctl schedules watch --target light_glow_1 --interval 30
+
+# Run a single evaluation check and exit
+sudo iothubctl schedules watch --once
+```
+> **Note:** The `iothubd` systemd service natively runs this 60s automated watcher continuously in the background.
+
+### 5. Load and Replace Local Schedules
+```bash
+# Load and validate a local schedule file into SQLite
+sudo iothubctl schedules load schedule.json
+
+# Force replace an existing schedule and increment revision
+sudo iothubctl schedules load schedule.json --replace --bump-revision
+```
+
+### 6. Publish Schedule to RabbitMQ
+Publishes schedule JSON to the broker exchange (`iot_commands`), automatically updating the date to today and auto-incrementing revisions:
+```bash
+# Publish schedule to RabbitMQ
+sudo iothubctl schedules publish schedule.json
+
+# Publish with date automatically set to today
+sudo iothubctl schedules publish schedule.json --today
+
+# Explicitly increment revision when republishing
+sudo iothubctl schedules publish schedule.json --bump-revision
+```
+
+### 7. Inspect Scheduled Actions
+```bash
+# List scheduled actions across all daily schedules
+sudo iothubctl actions list
+
+# Filter actions by lifecycle state
+sudo iothubctl actions list --status PENDING
+sudo iothubctl actions list --status COMPLETED
+sudo iothubctl actions list --status SUPERSEDED
+```
+
+### 8. RabbitMQ Broker Diagnostics
+```bash
+# Test connection to RabbitMQ broker and verify exchange/queue topology
+sudo iothubctl rabbitmq test
+
+# Inspect the most recent message received from RabbitMQ
+sudo iothubctl rabbitmq last
+```
+
+**Revision & Replacement Rules:**
+* **Exact Duplicate Protection:** Identical schedules delivered repeatedly with the same SHA-256 payload hash are acknowledged and ignored without re-triggering physical relays.
+* **Automatic Schedule Replacement:** If a schedule with modified content is published, the hub automatically detects the changed content hash, auto-increments the revision, marks older schedules as `SUPERSEDED`, and applies the new actions.
+* **Smart Action Reset:** Actions modified in time or operation reset to `PENDING` to ensure execution, while unchanged completed actions remain preserved.
 
 ---
 
@@ -267,18 +373,31 @@ sudo iothubctl uninstall --purge
 | **Status** | `sudo iothubctl status` | Overall system, queue, device, and schedule status |
 | **Diagnostics** | `sudo iothubctl doctor` | Comprehensive health check across all subsystems |
 | **Devices** | `sudo iothubctl devices scan` | Scan `/dev/ttyUSB*` and `/dev/ttyACM*` interfaces |
+| | `sudo iothubctl devices autoconfigure` | Auto-detect and register serial adapters to logical aliases |
 | | `sudo iothubctl devices enroll` | Register a new IoT device with MAC identity |
 | | `sudo iothubctl devices list` | Display all approved device-to-port bindings |
+| | `sudo iothubctl devices send <dev> <act> [-p '...']` | Transmit direct command JSON payload to target hardware |
 | | `sudo iothubctl devices unbind --mac <MAC>` | Unbind and revoke a registered device |
+| **Schedules** | `sudo iothubctl schedules list` | List all daily production schedules (ACTIVE vs SUPERSEDED) |
+| | `sudo iothubctl schedules show [id] [--raw]` | Inspect schedule actions or print raw JSON |
+| | `sudo iothubctl schedules show --time <t> \| --now` | Filter and preview generated command JSON for target time |
+| | `sudo iothubctl schedules dispatch [--now \| -t <t>]` | Dispatch scheduled action for time slot directly to hardware |
+| | `sudo iothubctl schedules watch [-i 60] [--target d]` | Automated schedule watcher tracking state changes |
+| | `sudo iothubctl schedules load <file> [--replace]` | Load and validate local schedule JSON into SQLite |
+| | `sudo iothubctl schedules publish <file> [--today]` | Publish schedule JSON to RabbitMQ broker exchange |
+| **Actions** | `sudo iothubctl actions list [--status <s>]` | Inspect scheduled actions across all daily schedules |
+| **RabbitMQ** | `sudo iothubctl rabbitmq test` | Verify RabbitMQ broker connectivity and queue topology |
+| | `sudo iothubctl rabbitmq last` | Inspect the last message received from RabbitMQ broker |
 | **Profiles** | `sudo iothubctl profiles list` | List supported actuator profiles and channels |
 | | `sudo iothubctl profiles show <ID>` | Inspect safety limits and permitted actions |
-| **Config** | `sudo iothubctl config show` | View runtime configuration (masked secrets) |
-| | `sudo iothubctl config set <k> <v>` | Set non-sensitive runtime configuration |
+| **Config** | `sudo iothubctl config show [--unmask]` | View runtime configuration (masked or decrypted secrets) |
+| | `sudo iothubctl config set <k> <v>` | Set non-sensitive runtime configuration in SQLite |
 | | `sudo iothubctl config set-secret <k>` | Encrypt and store credential with AES-256-GCM |
 | **Backup** | `sudo iothubctl backup create` | Create consistent online SQLite backup |
 | | `sudo iothubctl backup list` | List database snapshots |
+| | `sudo iothubctl backup verify <path>` | Verify SHA-256 integrity of a database snapshot |
 | | `sudo iothubctl backup restore <path>` | Restore database from backup snapshot |
-| **Maintenance** | `sudo iothubctl update` | Fetch latest release from GitHub and redeploy |
+| **Maintenance** | `sudo iothubctl update [--ref <branch/tag>]` | Fetch latest release from GitHub and redeploy service |
 | | `sudo iothubctl uninstall [--purge]` | Remove service, app files, and optionally databases |
 | **Service** | `sudo systemctl status iothubd` | Check Linux systemd service state |
 | | `sudo journalctl -u iothubd -f` | Stream background daemon log entries |
