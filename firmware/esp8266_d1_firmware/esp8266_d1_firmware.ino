@@ -18,12 +18,14 @@
  * - JSON Command Parsing: Stack-based string inspection (zero dynamic heap allocations)
  * - Physical Execution: Drives the light relay, indicator LED and Valve digital pins with independent logic polarities
  * - EEPROM Persistence: Persists both light and valve states across reboots using ESP8266 flash EEPROM emulation
+ * - Periodic Reboot: Automatically restarts the ESP8266 every 1 hour (state restored seamlessly from EEPROM)
  * - Duplicate Command Handling: Deduplicates matching command IDs
  * - Backward Compatibility: Accepts single-char & CLI commands:
  *     '1' / '0' -> Light ON / OFF
  *     'v' / 'c' -> Valve ON (open) / OFF (close)
  *     '?'       -> Query states (LIGHT & VALVE)
  *     'b'       -> Diagnostic blink (indicator LED 5 times, light relay unaffected)
+ *     "reboot"  -> Trigger instant software restart
  * - Watchdog Safe: Yields control in main loop to prevent ESP8266 WDT resets
  */
 
@@ -63,10 +65,16 @@ const bool VALVE_ACTIVE_LOW = false;
 // Device & Protocol Configuration
 // =====================================================================
 const char* NODE_ID        = "98a316e6b658";
-const char* FIRMWARE_VER   = "1.1.0";
+const char* FIRMWARE_VER   = "1.2.0";
 const char* BOARD_TYPE     = "ESP8266_D1";
 const char* CHANNEL_LIGHT  = "relay:light";
 const char* CHANNEL_VALVE  = "relay:valve";
+
+// Periodic Reboot Configuration:
+// Automatically restarts ESP8266 every 1 hour (3600 seconds) for stability.
+// State is preserved in EEPROM and seamlessly restored on reboot.
+const unsigned long REBOOT_INTERVAL_MS = 3600000UL; // 1 hour = 3,600,000 ms
+unsigned long g_last_boot_time = 0;
 
 // EEPROM layout (ESP8266 uses flash-emulated EEPROM)
 const int EEPROM_SIZE        = 64;
@@ -210,7 +218,7 @@ void sendHello() {
   Serial.print(CHANNEL_LIGHT);
   Serial.print(F("\",\""));
   Serial.print(CHANNEL_VALVE);
-  Serial.print(F("\"],\"actions\":[\"LIGHTS_ON\",\"LIGHTS_OFF\",\"VALVE_ON\",\"VALVE_OFF\",\"VALVE_OPEN\",\"VALVE_CLOSE\",\"STATUS\"],"));
+  Serial.print(F("\"],\"actions\":[\"LIGHTS_ON\",\"LIGHTS_OFF\",\"VALVE_ON\",\"VALVE_OFF\",\"VALVE_OPEN\",\"VALVE_CLOSE\",\"STATUS\",\"REBOOT\"],"));
   Serial.print(F("\"state\":\""));
   Serial.print(g_light_state ? F("ON") : F("OFF"));
   Serial.print(F("\",\"states\":{\"relay:light\":\""));
@@ -309,7 +317,25 @@ void processBuffer(const char* line) {
     Serial.print(F("STATE:LIGHT="));
     Serial.print(g_light_state ? F("ON") : F("OFF"));
     Serial.print(F(",VALVE="));
-    Serial.println(g_valve_state ? F("ON") : F("OFF"));
+    Serial.print(g_valve_state ? F("ON") : F("OFF"));
+    unsigned long elapsed_ms = millis() - g_last_boot_time;
+    unsigned long uptime_sec = elapsed_ms / 1000UL;
+    unsigned long next_reboot_sec = (REBOOT_INTERVAL_MS > elapsed_ms) ? ((REBOOT_INTERVAL_MS - elapsed_ms) / 1000UL) : 0;
+    Serial.print(F(",UPTIME="));
+    Serial.print(uptime_sec);
+    Serial.print(F("s,NEXT_REBOOT="));
+    Serial.print(next_reboot_sec);
+    Serial.println(F("s"));
+    return;
+  }
+
+  // Reboot command (CLI)
+  if (strcasecmp(line, "reboot") == 0 || strcasecmp(line, "restart") == 0) {
+    Serial.println(F("[DEBUG] Command matched: REBOOT (CLI)"));
+    Serial.println(F("OK:REBOOTING"));
+    Serial.flush();
+    delay(100);
+    ESP.restart();
     return;
   }
 
@@ -403,6 +429,16 @@ void processBuffer(const char* line) {
     Serial.println(F("[DEBUG] Executing action: STATUS query"));
     sendResult(cmd_id, "SUCCESS", "STATUS");
 
+  // Action: Reboot / Restart
+  } else if (strcasecmp(action, "REBOOT") == 0 || strcasecmp(action, "RESTART") == 0) {
+    Serial.println(F("[DEBUG] Executing action: REBOOT"));
+    sendResult(cmd_id, "SUCCESS", "REBOOT");
+    Serial.println(F("OK:REBOOTING"));
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+    return;
+
   } else {
     Serial.print(F("[DEBUG] Unrecognized action: '"));
     Serial.print(action);
@@ -446,6 +482,8 @@ void setup() {
   applyLightState(g_light_state);
   applyValveState(g_valve_state);
 
+  g_last_boot_time = millis();
+  Serial.println(F("[DEBUG] Periodic 1-hour auto-reboot armed (interval: 3600000 ms)."));
   Serial.println(F("[DEBUG] Initialization complete. Listening for commands on Serial 9600 baud..."));
 }
 
@@ -469,5 +507,13 @@ void loop() {
   }
 
   // Yield to allow ESP8266 background system tasks and prevent watchdog reset
+  // Periodic auto-reboot check (every 1 hour = 3600000 ms)
+  if (millis() - g_last_boot_time >= REBOOT_INTERVAL_MS) {
+    Serial.println(F("[DEBUG] Periodic 1-hour reboot timer triggered. Restarting ESP8266..."));
+    Serial.flush();
+    delay(100);
+    ESP.restart();
+  }
+
   yield();
 }
