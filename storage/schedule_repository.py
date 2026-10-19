@@ -571,3 +571,66 @@ class ScheduleRepository:
             "executions_total": sum(exec_counts.values()),
             "executions_by_status": exec_counts,
         }
+
+    # =========================================================================
+    # Action Status Table Operations (Per-Device Latest Status Cache)
+    # =========================================================================
+    async def save_device_action_status(
+        self,
+        device_name: str,
+        action: str,
+        status: str,
+        payload: Dict[str, Any],
+        updated_at: Optional[str] = None,
+    ) -> None:
+        """
+        Saves the latest device action status JSON into 'action_status' table.
+        Primary key is 'device_name'. If a record already exists for device_name,
+        it is always replaced with the new one.
+        """
+        now = updated_at or datetime.now(timezone.utc).isoformat()
+        payload_str = json.dumps(payload)
+        async with self.db.transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO action_status (device_name, action, status, payload_json, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(device_name) DO UPDATE SET
+                    action = excluded.action,
+                    status = excluded.status,
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (device_name, action, status, payload_str, now),
+            )
+
+    async def get_device_action_status(self, device_name: str) -> Optional[Dict[str, Any]]:
+        """Retrieves latest action status record for a specific device_name."""
+        query = "SELECT device_name, action, status, payload_json, updated_at FROM action_status WHERE device_name = ?"
+        async with self.db.connection.execute(query, (device_name,)) as cur:
+            r = await cur.fetchone()
+            if not r:
+                return None
+            return {
+                "device_name": r["device_name"],
+                "action": r["action"],
+                "status": r["status"],
+                "payload": json.loads(r["payload_json"]) if r["payload_json"] else {},
+                "updated_at": r["updated_at"],
+            }
+
+    async def list_action_statuses(self) -> List[Dict[str, Any]]:
+        """Lists all latest device action status records."""
+        query = "SELECT device_name, action, status, payload_json, updated_at FROM action_status ORDER BY updated_at DESC"
+        async with self.db.connection.execute(query) as cur:
+            rows = await cur.fetchall()
+            return [
+                {
+                    "device_name": r["device_name"],
+                    "action": r["action"],
+                    "status": r["status"],
+                    "payload": json.loads(r["payload_json"]) if r["payload_json"] else {},
+                    "updated_at": r["updated_at"],
+                }
+                for r in rows
+            ]

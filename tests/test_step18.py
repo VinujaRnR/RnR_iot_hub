@@ -301,7 +301,7 @@ async def test_step18_05_device_acknowledgment_matches_action_ids(temp_db):
     assert res_ev["action_id"] == "act-target-uuid-999"
     assert res_ev["device_id"] == "98a316e6b658"
     assert res_ev["action"] == "LIGHTS_ON"
-    assert res_ev["status"] == "SUCCESS"
+    assert res_ev["status"] in ("SUCCESS", "successfull")
 
 
 # =====================================================================

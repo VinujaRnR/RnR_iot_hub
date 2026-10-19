@@ -152,13 +152,31 @@ class EventOutbox:
 
             # 2. Update scheduled_actions table if linked
             if schedule_id and action_id:
-                action_status = "COMPLETED" if status.upper() == "SUCCESS" else "FAILED"
+                action_status = "COMPLETED" if str(status).upper() in ("SUCCESS", "SUCCESSFULL") else "FAILED"
                 await conn.execute(
                     "UPDATE scheduled_actions SET status = ?, executed_at = ? WHERE schedule_id = ? AND action_id = ?",
                     (action_status, now, schedule_id, action_id),
                 )
 
-            # 3. Enqueue into event_outbox in the same transaction
+            # 3. Store / Replace latest status JSON in action_status table for device_name primary key
+            payload_str = json.dumps(payload)
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO action_status (device_name, action, status, payload_json, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(device_name) DO UPDATE SET
+                        action = excluded.action,
+                        status = excluded.status,
+                        payload_json = excluded.payload_json,
+                        updated_at = excluded.updated_at
+                    """,
+                    (resolved_device_name, action, user_status, payload_str, now),
+                )
+            except Exception as act_st_err:
+                logger.debug("action_status table update skipped: %s", act_st_err)
+
+            # 4. Enqueue into event_outbox in the same transaction
             outbox_id = await self.enqueue_tx(
                 conn=conn,
                 event_type=event_type,

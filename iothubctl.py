@@ -548,6 +548,15 @@ async def _transmit_command(target_device: str, action_name: str, params: Option
             routing_key=f"hub.{HUB_ID}.action.result",
             event_id=stable_id,
         )
+        from storage.schedule_repository import ScheduleRepository
+        repo_fb = ScheduleRepository(db_fb)
+        await repo_fb.save_device_action_status(
+            device_name=target_device,
+            action=action_name,
+            status="successfull",
+            payload=event_payload,
+            updated_at=now,
+        )
         await db_fb.close()
     except Exception:
         pass
@@ -1368,6 +1377,53 @@ async def cmd_actions(args: argparse.Namespace) -> int:
 
 
 # =====================================================================
+# Command: iothubctl action-status (list / show)
+# =====================================================================
+async def cmd_action_status(args: argparse.Namespace) -> int:
+    db = get_db(args.db)
+    await db.connect()
+    try:
+        repo = ScheduleRepository(db)
+        sub = getattr(args, "status_action", None)
+        if sub == "show":
+            dev_name = getattr(args, "device_name", "")
+            rec = await repo.get_device_action_status(dev_name)
+            if not rec:
+                print(f"\n{YELLOW}No action status found for device '{dev_name}'.{RESET}\n")
+                return 1
+            print(f"\n{BOLD}{CYAN}Action Status: {dev_name}{RESET}")
+            print(f"{'='*60}")
+            print(f"  Device Name: {rec['device_name']}")
+            print(f"  Action:      {rec['action']}")
+            st = rec.get("status", "")
+            st_c = GREEN if st == "successfull" else (RED if st == "FAILED" else YELLOW)
+            print(f"  Status:      {st_c}{st}{RESET}")
+            print(f"  Updated At:  {rec['updated_at']}")
+            print(f"\n  Payload JSON:")
+            print(json.dumps(rec["payload"], indent=2))
+            print()
+            return 0
+        else:
+            records = await repo.list_action_statuses()
+            print(f"\n{BOLD}{CYAN}iothubd — Device Action Statuses (action_status table){RESET}")
+            print(f"{'='*75}")
+            if not records:
+                print(f"  {YELLOW}No action status records found in database.{RESET}\n")
+                return 0
+
+            print(f"  {'DEVICE NAME':<20} {'ACTION':<14} {'STATUS':<14} {'UPDATED AT'}")
+            print(f"  {'-'*20} {'-'*14} {'-'*14} {'-'*24}")
+            for r in records:
+                st = r.get("status", "")
+                st_c = GREEN if st == "successfull" else (RED if st == "FAILED" else YELLOW)
+                print(f"  {r.get('device_name', ''):<20} {r.get('action', ''):<14} {st_c}{st:<14}{RESET} {r.get('updated_at', '')}")
+            print()
+            return 0
+    finally:
+        await db.close()
+
+
+# =====================================================================
 # Main Parser Construction
 # =====================================================================
 def build_parser() -> argparse.ArgumentParser:
@@ -1473,6 +1529,13 @@ def build_parser() -> argparse.ArgumentParser:
     act_list = act_subs.add_parser("list", help="List actions across daily schedules")
     act_list.add_argument("--status", choices=["PENDING", "COMPLETED", "FAILED", "SUPERSEDED", "SKIPPED_UNSAFE"], default=None, help="Filter by status")
     act_list.add_argument("--limit", type=int, default=50, help="Max actions to list")
+
+    # action-status
+    ast_parser = subparsers.add_parser("action-status", aliases=["action_status"], help="Inspect per-device latest action status from action_status table")
+    ast_subs = ast_parser.add_subparsers(dest="status_action")
+    ast_subs.add_parser("list", help="List all device action statuses")
+    ast_show = ast_subs.add_parser("show", help="Show latest action status JSON for a device")
+    ast_show.add_argument("device_name", help="Device name / ID")
 
     # uninstall
     uninst_p = subparsers.add_parser("uninstall", help="Uninstall iothubd service and application")
@@ -1585,6 +1648,8 @@ def main():
         "schedules": cmd_schedules,
         "schedule": cmd_schedules,
         "actions": cmd_actions,
+        "action-status": cmd_action_status,
+        "action_status": cmd_action_status,
         "config": cmd_config,
         "devices": cmd_devices,
         "profiles": cmd_profiles,

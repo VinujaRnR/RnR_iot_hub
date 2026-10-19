@@ -339,6 +339,20 @@ class DatabaseManager:
             )
             """
         )
+
+        # 12. Action Status table (Stores latest status JSON per device_name primary key)
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS action_status (
+                device_name TEXT PRIMARY KEY,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_action_status_updated ON action_status(updated_at);")
         await self._conn.commit()
 
     # Device repository methods

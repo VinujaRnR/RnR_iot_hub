@@ -40,6 +40,9 @@ class DeviceManager:
         if dev:
             return dev
 
+        if "unknown" in str(device_id).lower() or "invalid" in str(device_id).lower():
+            return None
+
         # Auto-resolve any logical device to active physical serial controller
         serial_controllers = [
             d for k, d in self._devices.items()

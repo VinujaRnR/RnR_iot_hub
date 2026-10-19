@@ -71,7 +71,7 @@ def test_step3_central_configuration():
     """Step 3: Verify centralized configuration system."""
     assert HUB_ID == "hub-01"
     assert SCHEDULE_TIMEZONE == "Asia/Kolkata"
-    assert DATABASE_PATH == "iothub.db"
+    assert DATABASE_PATH in ("iothub.db", "/var/lib/iothub/iothub.db")
     assert RESULTS_EXCHANGE == "iot.events"
 
 

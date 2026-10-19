@@ -384,6 +384,19 @@ def create_app(
                 "result": res,
             }
             
+            # Persist to action_status table (always replace old record for device_name)
+            try:
+                repo_inst = await get_repo_instance()
+                await repo_inst.save_device_action_status(
+                    device_name=clean_id,
+                    action=action,
+                    status="successfull",
+                    payload=event_payload,
+                    updated_at=now,
+                )
+            except Exception as status_err:
+                logger.warning("Could not persist action status for %s: %s", clean_id, status_err)
+
             outbox_inst = app.state.outbox
             pub = app.state.publisher
             if outbox_inst:
@@ -565,6 +578,29 @@ def create_app(
             "system_load_1m": load_avg[0],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    # =========================================================================
+    # 11. GET /action_status - Per-Device Latest Action Status (action_status table)
+    # =========================================================================
+    @app.get("/action_status", summary="List latest action status for all devices")
+    async def list_action_statuses():
+        """Returns the latest action status JSON for every device in the action_status table."""
+        repo = await get_repo_instance()
+        records = await repo.list_action_statuses()
+        return {
+            "total": len(records),
+            "action_statuses": records,
+        }
+
+    @app.get("/action_status/{device_name:path}", summary="Get latest action status for a device")
+    async def get_action_status(device_name: str):
+        """Returns the latest action status JSON for a specific device."""
+        clean_name = unquote(device_name)
+        repo = await get_repo_instance()
+        rec = await repo.get_device_action_status(clean_name)
+        if not rec:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No action status found for device '{clean_name}'")
+        return rec
 
     return app
 

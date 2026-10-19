@@ -83,6 +83,15 @@ class RabbitMQPublisher:
             self.results_exchange_name,
         )
 
+        # Declare durable action_status queue bound to results exchange so messages can be retrieved anytime
+        try:
+            status_queue = await self.channel.declare_queue("action_status", durable=True)
+            await status_queue.bind(self.exchange, routing_key="hub.#")
+            await status_queue.bind(self.exchange, routing_key="action_status.#")
+            await status_queue.bind(self.exchange, routing_key="action_status")
+        except Exception as q_err:
+            logger.debug("action_status durable queue binding skipped: %s", q_err)
+
         # On reconnection, flush any pending events retained during downtime
         if self.outbox:
             try:
