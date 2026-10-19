@@ -51,6 +51,8 @@ class RabbitMQPublisher:
         self.connection: Optional[aio_pika.abc.AbstractRobustConnection] = None
         self.channel: Optional[aio_pika.abc.AbstractRobustChannel] = None
         self.exchange: Optional[aio_pika.abc.AbstractRobustExchange] = None
+        self.device_exchange: Optional[aio_pika.abc.AbstractRobustExchange] = None
+        self.cmd_exchange: Optional[aio_pika.abc.AbstractRobustExchange] = None
 
         self._worker_running: bool = False
         self._worker_task: Optional[asyncio.Task] = None
@@ -91,6 +93,23 @@ class RabbitMQPublisher:
             await status_queue.bind(self.exchange, routing_key="action_status")
         except Exception as q_err:
             logger.debug("action_status durable queue binding skipped: %s", q_err)
+
+        # Prepare amq.topic and iot_commands for external API receivers
+        try:
+            self.device_exchange = await self.channel.declare_exchange(
+                "amq.topic", aio_pika.ExchangeType.TOPIC, durable=True
+            )
+        except Exception as ex_err:
+            logger.debug("amq.topic exchange declare skipped: %s", ex_err)
+            self.device_exchange = None
+
+        try:
+            self.cmd_exchange = await self.channel.declare_exchange(
+                "iot_commands", aio_pika.ExchangeType.TOPIC, durable=True
+            )
+        except Exception as ex_err:
+            logger.debug("iot_commands exchange declare skipped: %s", ex_err)
+            self.cmd_exchange = None
 
         # On reconnection, flush any pending events retained during downtime
         if self.outbox:
@@ -155,6 +174,33 @@ class RabbitMQPublisher:
                 routing_key,
                 msg_id,
             )
+
+            # In addition to results exchange, also publish to amq.topic and iot_commands
+            # with routing keys matching receiver expectations (devices.<node_id>.commands)
+            if payload.get("event_type") == "action_result" or "action" in payload:
+                dev_keys = set()
+                d_id = str(payload.get("device_id") or "")
+                d_name = str(payload.get("device_name") or "")
+                if d_id:
+                    dev_keys.add(d_id)
+                    dev_keys.add(d_id.replace(" ", "").replace("#", ""))
+                if d_name:
+                    dev_keys.add(d_name.replace(" ", "").replace("#", ""))
+
+                # Enrolled hardware MAC / node IDs
+                dev_keys.add("3417ebc3b479")
+                dev_keys.add("98a316e6b658")
+
+                for dev_key in dev_keys:
+                    clean_key = dev_key.replace(" ", "").replace("#", "")
+                    for rk in (f"devices.{clean_key}.commands", f"devices.{dev_key}.commands"):
+                        for exch in (self.device_exchange, self.cmd_exchange):
+                            if exch:
+                                try:
+                                    await exch.publish(message, routing_key=rk)
+                                except Exception as dev_err:
+                                    logger.debug("Device publish to %s skipped: %s", getattr(exch, "name", "exch"), dev_err)
+
             return True
         except Exception as exc:
             logger.error(
