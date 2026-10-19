@@ -174,11 +174,41 @@ async def test_action_status_table_replacement_on_conflict(tmp_path):
     all_statuses = await repo.list_action_statuses()
     assert len(all_statuses) == 2
 
-    # Query individual devices
+    # Query individual devices (both exact, alias variant, and prefix)
     light_rec = await repo.get_device_action_status("light_glow_1")
     assert light_rec["action"] == "LIGHT_OFF"
+
+    # Alias variant: 'light_glow #1' should find 'light_glow_1' record
+    light_rec_hash = await repo.get_device_action_status("light_glow #1")
+    assert light_rec_hash is not None
+    assert light_rec_hash["action"] == "LIGHT_OFF"
+
+    # Prefix query: 'light_glow' should also match
+    light_rec_pfx = await repo.get_device_action_status("light_glow")
+    assert light_rec_pfx is not None
+    assert light_rec_pfx["action"] == "LIGHT_OFF"
+
     fan_rec = await repo.get_device_action_status("fan_relay_1")
     assert fan_rec["action"] == "FAN_ON"
+
+    # 4. Save with alias name 'light_glow #1' - must replace the existing 'light_glow_1' record
+    payload_4 = {
+        "device_name": "light_glow #1",
+        "device name": "light_glow #1",
+        "status": "successfull",
+        "statue": "successfull",
+        "action": "LIGHT_ON",
+    }
+    await repo.save_device_action_status(
+        device_name="light_glow #1",
+        action="LIGHT_ON",
+        status="successfull",
+        payload=payload_4,
+        updated_at="2026-10-19T11:10:00+00:00",
+    )
+    all_statuses = await repo.list_action_statuses()
+    assert len(all_statuses) == 2, "Alias variant 'light_glow #1' must replace 'light_glow_1'"
+    assert all_statuses[0]["action"] == "LIGHT_ON"
 
     await db.close()
 

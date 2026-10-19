@@ -590,7 +590,21 @@ class ScheduleRepository:
         """
         now = updated_at or datetime.now(timezone.utc).isoformat()
         payload_str = json.dumps(payload)
+        
+        def normalize_key(s: str) -> str:
+            return "".join(c for c in str(s).lower() if c.isalnum())
+
+        target_norm = normalize_key(device_name)
+
         async with self.db.transaction() as conn:
+            # Clean up any alias variant with equivalent normalized alphanumeric name
+            async with conn.execute("SELECT device_name FROM action_status") as cur:
+                rows = await cur.fetchall()
+                for r in rows:
+                    existing_name = r["device_name"]
+                    if existing_name != device_name and normalize_key(existing_name) == target_norm:
+                        await conn.execute("DELETE FROM action_status WHERE device_name = ?", (existing_name,))
+
             await conn.execute(
                 """
                 INSERT INTO action_status (device_name, action, status, payload_json, updated_at)
@@ -605,19 +619,43 @@ class ScheduleRepository:
             )
 
     async def get_device_action_status(self, device_name: str) -> Optional[Dict[str, Any]]:
-        """Retrieves latest action status record for a specific device_name."""
+        """
+        Retrieves latest action status record for a specific device_name.
+        Supports exact match, normalized alphanumeric match (e.g. 'light_glow_1' matches 'light_glow #1'),
+        and prefix match.
+        """
+        # 1. Exact match
         query = "SELECT device_name, action, status, payload_json, updated_at FROM action_status WHERE device_name = ?"
         async with self.db.connection.execute(query, (device_name,)) as cur:
             r = await cur.fetchone()
-            if not r:
-                return None
-            return {
-                "device_name": r["device_name"],
-                "action": r["action"],
-                "status": r["status"],
-                "payload": json.loads(r["payload_json"]) if r["payload_json"] else {},
-                "updated_at": r["updated_at"],
-            }
+            if r:
+                return {
+                    "device_name": r["device_name"],
+                    "action": r["action"],
+                    "status": r["status"],
+                    "payload": json.loads(r["payload_json"]) if r["payload_json"] else {},
+                    "updated_at": r["updated_at"],
+                }
+
+        # 2. Case-insensitive & symbol-insensitive match (e.g. 'light_glow_1' == 'light_glow #1')
+        def normalize_key(s: str) -> str:
+            return "".join(c for c in str(s).lower() if c.isalnum())
+
+        target_norm = normalize_key(device_name)
+        all_records = await self.list_action_statuses()
+
+        for rec in all_records:
+            if normalize_key(rec["device_name"]) == target_norm:
+                return rec
+
+        # 3. Prefix match (e.g. when unquoted '#' in bash truncates 'light_glow #1' to 'light_glow')
+        if target_norm:
+            for rec in all_records:
+                rec_norm = normalize_key(rec["device_name"])
+                if rec_norm.startswith(target_norm) or target_norm.startswith(rec_norm):
+                    return rec
+
+        return None
 
     async def list_action_statuses(self) -> List[Dict[str, Any]]:
         """Lists all latest device action status records."""

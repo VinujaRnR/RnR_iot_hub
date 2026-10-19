@@ -1386,12 +1386,13 @@ async def cmd_action_status(args: argparse.Namespace) -> int:
         repo = ScheduleRepository(db)
         sub = getattr(args, "status_action", None)
         if sub == "show":
-            dev_name = getattr(args, "device_name", "")
+            dev_arg = getattr(args, "device_name", "")
+            dev_name = " ".join(dev_arg) if isinstance(dev_arg, (list, tuple)) else str(dev_arg)
             rec = await repo.get_device_action_status(dev_name)
             if not rec:
                 print(f"\n{YELLOW}No action status found for device '{dev_name}'.{RESET}\n")
                 return 1
-            print(f"\n{BOLD}{CYAN}Action Status: {dev_name}{RESET}")
+            print(f"\n{BOLD}{CYAN}Action Status: {rec['device_name']}{RESET}")
             print(f"{'='*60}")
             print(f"  Device Name: {rec['device_name']}")
             print(f"  Action:      {rec['action']}")
@@ -1535,7 +1536,7 @@ def build_parser() -> argparse.ArgumentParser:
     ast_subs = ast_parser.add_subparsers(dest="status_action")
     ast_subs.add_parser("list", help="List all device action statuses")
     ast_show = ast_subs.add_parser("show", help="Show latest action status JSON for a device")
-    ast_show.add_argument("device_name", help="Device name / ID")
+    ast_show.add_argument("device_name", nargs="+", help="Device name / ID (e.g. light_glow_1 or 'light_glow #1')")
 
     # uninstall
     uninst_p = subparsers.add_parser("uninstall", help="Uninstall iothubd service and application")
