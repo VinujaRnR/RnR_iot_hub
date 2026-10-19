@@ -158,18 +158,14 @@ class EventOutbox:
                     (action_status, now, schedule_id, action_id),
                 )
 
-            # 3. Store / Replace latest status JSON in action_status table for device_name primary key
+            # 3. Store / Replace latest status JSON in action_status table (always replace all with most recent)
             payload_str = json.dumps(payload)
             try:
+                await conn.execute("DELETE FROM action_status")
                 await conn.execute(
                     """
                     INSERT INTO action_status (device_name, action, status, payload_json, updated_at)
                     VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(device_name) DO UPDATE SET
-                        action = excluded.action,
-                        status = excluded.status,
-                        payload_json = excluded.payload_json,
-                        updated_at = excluded.updated_at
                     """,
                     (resolved_device_name, action, user_status, payload_str, now),
                 )

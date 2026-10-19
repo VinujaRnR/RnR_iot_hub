@@ -590,40 +590,39 @@ class ScheduleRepository:
         """
         now = updated_at or datetime.now(timezone.utc).isoformat()
         payload_str = json.dumps(payload)
-        
-        def normalize_key(s: str) -> str:
-            return "".join(c for c in str(s).lower() if c.isalnum())
-
-        target_norm = normalize_key(device_name)
 
         async with self.db.transaction() as conn:
-            # Clean up any alias variant with equivalent normalized alphanumeric name
-            async with conn.execute("SELECT device_name FROM action_status") as cur:
-                rows = await cur.fetchall()
-                for r in rows:
-                    existing_name = r["device_name"]
-                    if existing_name != device_name and normalize_key(existing_name) == target_norm:
-                        await conn.execute("DELETE FROM action_status WHERE device_name = ?", (existing_name,))
-
+            # In the DB: always replace all records with the most recent one
+            await conn.execute("DELETE FROM action_status")
             await conn.execute(
                 """
                 INSERT INTO action_status (device_name, action, status, payload_json, updated_at)
                 VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(device_name) DO UPDATE SET
-                    action = excluded.action,
-                    status = excluded.status,
-                    payload_json = excluded.payload_json,
-                    updated_at = excluded.updated_at
                 """,
                 (device_name, action, status, payload_str, now),
             )
 
-    async def get_device_action_status(self, device_name: str) -> Optional[Dict[str, Any]]:
+    async def get_device_action_status(self, device_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Retrieves latest action status record for a specific device_name.
-        Supports exact match, normalized alphanumeric match (e.g. 'light_glow_1' matches 'light_glow #1'),
-        and prefix match.
+        Retrieves the latest action status record for a specific device_name,
+        or the single most recent record if device_name is None.
+        Supports exact match, normalized alphanumeric match, and prefix match.
         """
+        # If no device_name provided, return the latest record in action_status table
+        if not device_name:
+            query = "SELECT device_name, action, status, payload_json, updated_at FROM action_status ORDER BY updated_at DESC LIMIT 1"
+            async with self.db.connection.execute(query) as cur:
+                r = await cur.fetchone()
+                if not r:
+                    return None
+                return {
+                    "device_name": r["device_name"],
+                    "action": r["action"],
+                    "status": r["status"],
+                    "payload": json.loads(r["payload_json"]) if r["payload_json"] else {},
+                    "updated_at": r["updated_at"],
+                }
+
         # 1. Exact match
         query = "SELECT device_name, action, status, payload_json, updated_at FROM action_status WHERE device_name = ?"
         async with self.db.connection.execute(query, (device_name,)) as cur:

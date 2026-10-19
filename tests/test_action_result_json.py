@@ -155,7 +155,7 @@ async def test_action_status_table_replacement_on_conflict(tmp_path):
     assert all_statuses[0]["action"] == "LIGHT_OFF"
     assert all_statuses[0]["payload"]["action"] == "LIGHT_OFF"
 
-    # 3. Add a different device
+    # 3. Add a different device (under 'always replace all with most recent', this replaces any previous record)
     payload_3 = {
         "device_name": "fan_relay_1",
         "device name": "fan_relay_1",
@@ -172,26 +172,16 @@ async def test_action_status_table_replacement_on_conflict(tmp_path):
     )
 
     all_statuses = await repo.list_action_statuses()
-    assert len(all_statuses) == 2
+    assert len(all_statuses) == 1, "Must replace all records with the single most recent one"
+    assert all_statuses[0]["device_name"] == "fan_relay_1"
+    assert all_statuses[0]["action"] == "FAN_ON"
 
-    # Query individual devices (both exact, alias variant, and prefix)
-    light_rec = await repo.get_device_action_status("light_glow_1")
-    assert light_rec["action"] == "LIGHT_OFF"
+    # Query without arguments returns the single most recent record
+    latest_rec = await repo.get_device_action_status()
+    assert latest_rec is not None
+    assert latest_rec["device_name"] == "fan_relay_1"
 
-    # Alias variant: 'light_glow #1' should find 'light_glow_1' record
-    light_rec_hash = await repo.get_device_action_status("light_glow #1")
-    assert light_rec_hash is not None
-    assert light_rec_hash["action"] == "LIGHT_OFF"
-
-    # Prefix query: 'light_glow' should also match
-    light_rec_pfx = await repo.get_device_action_status("light_glow")
-    assert light_rec_pfx is not None
-    assert light_rec_pfx["action"] == "LIGHT_OFF"
-
-    fan_rec = await repo.get_device_action_status("fan_relay_1")
-    assert fan_rec["action"] == "FAN_ON"
-
-    # 4. Save with alias name 'light_glow #1' - must replace the existing 'light_glow_1' record
+    # 4. Save with device 'light_glow #1' - replaces the fan record with the new one
     payload_4 = {
         "device_name": "light_glow #1",
         "device name": "light_glow #1",
@@ -207,8 +197,14 @@ async def test_action_status_table_replacement_on_conflict(tmp_path):
         updated_at="2026-10-19T11:10:00+00:00",
     )
     all_statuses = await repo.list_action_statuses()
-    assert len(all_statuses) == 2, "Alias variant 'light_glow #1' must replace 'light_glow_1'"
+    assert len(all_statuses) == 1, "Table must hold only the single most recent status record"
+    assert all_statuses[0]["device_name"] == "light_glow #1"
     assert all_statuses[0]["action"] == "LIGHT_ON"
+
+    # Query by device_name (or alias) retrieves it
+    light_rec = await repo.get_device_action_status("light_glow_1")
+    assert light_rec is not None
+    assert light_rec["action"] == "LIGHT_ON"
 
     await db.close()
 

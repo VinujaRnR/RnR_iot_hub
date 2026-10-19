@@ -1386,11 +1386,12 @@ async def cmd_action_status(args: argparse.Namespace) -> int:
         repo = ScheduleRepository(db)
         sub = getattr(args, "status_action", None)
         if sub == "show":
-            dev_arg = getattr(args, "device_name", "")
-            dev_name = " ".join(dev_arg) if isinstance(dev_arg, (list, tuple)) else str(dev_arg)
+            dev_arg = getattr(args, "device_name", None)
+            dev_name = " ".join(dev_arg) if isinstance(dev_arg, (list, tuple)) and dev_arg else (str(dev_arg) if dev_arg else None)
             rec = await repo.get_device_action_status(dev_name)
             if not rec:
-                print(f"\n{YELLOW}No action status found for device '{dev_name}'.{RESET}\n")
+                msg = f" for device '{dev_name}'" if dev_name else ""
+                print(f"\n{YELLOW}No action status found{msg}.{RESET}\n")
                 return 1
             print(f"\n{BOLD}{CYAN}Action Status: {rec['device_name']}{RESET}")
             print(f"{'='*60}")
@@ -1535,8 +1536,8 @@ def build_parser() -> argparse.ArgumentParser:
     ast_parser = subparsers.add_parser("action-status", aliases=["action_status"], help="Inspect per-device latest action status from action_status table")
     ast_subs = ast_parser.add_subparsers(dest="status_action")
     ast_subs.add_parser("list", help="List all device action statuses")
-    ast_show = ast_subs.add_parser("show", help="Show latest action status JSON for a device")
-    ast_show.add_argument("device_name", nargs="+", help="Device name / ID (e.g. light_glow_1 or 'light_glow #1')")
+    ast_show = ast_subs.add_parser("show", help="Show latest action status JSON (defaults to most recent record)")
+    ast_show.add_argument("device_name", nargs="*", default=None, help="Device name / ID (optional; defaults to most recent record)")
 
     # uninstall
     uninst_p = subparsers.add_parser("uninstall", help="Uninstall iothubd service and application")
