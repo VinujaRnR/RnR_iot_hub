@@ -25,6 +25,7 @@ import logging
 import os
 import time
 from typing import Any, Dict, List, Optional
+import uuid
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response, status
@@ -361,7 +362,60 @@ def create_app(
         params = payload.get("params") or {}
         try:
             res = await dev_mgr.dispatch(clean_id, action, {"params": params} if params else {})
-            return {"status": "SUCCESS", "device_id": clean_id, "result": res}
+            
+            # Record execution and publish action result event to RabbitMQ
+            now = datetime.now(timezone.utc).isoformat()
+            stable_event_id = str(uuid.uuid4())
+            routing_key = f"hub.{HUB_ID}.action.result"
+            
+            event_payload = {
+                "device_name": clean_id,
+                "device name": clean_id,
+                "status": "successfull",
+                "statue": "successfull",
+                "action": action,
+                "event_id": stable_event_id,
+                "event_type": "action_result",
+                "hub_id": HUB_ID,
+                "action_id": f"manual-{int(time.time() * 1000)}",
+                "device_id": clean_id,
+                "scheduled_at": now,
+                "executed_at": now,
+                "result": res,
+            }
+            
+            outbox_inst = app.state.outbox
+            pub = app.state.publisher
+            if outbox_inst:
+                try:
+                    await outbox_inst.enqueue(
+                        event_type="action_result",
+                        payload=event_payload,
+                        routing_key=routing_key,
+                        event_id=stable_event_id,
+                    )
+                    if pub and hasattr(pub, "trigger_flush"):
+                        pub.trigger_flush()
+                except Exception as out_err:
+                    logger.warning("Could not persist manual command event to outbox: %s", out_err)
+            elif pub and hasattr(pub, "publish_event"):
+                try:
+                    await pub.publish_event(
+                        routing_key=routing_key,
+                        payload=event_payload,
+                        message_id=stable_event_id,
+                    )
+                except Exception as pub_err:
+                    logger.warning("Could not publish manual command event: %s", pub_err)
+
+            return {
+                "status": "SUCCESS",
+                "device_id": clean_id,
+                "result": res,
+                "event": event_payload,
+            }
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.error("Failed to execute command '%s' on '%s': %s", action, clean_id, exc)
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))

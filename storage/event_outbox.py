@@ -95,6 +95,7 @@ class EventOutbox:
         routing_key: Optional[str] = None,
         event_id: Optional[str] = None,
         event_type: str = "action_result",
+        device_name: Optional[str] = None,
     ) -> Tuple[int, int, Dict[str, Any]]:
         """
         Step 14: Stores the execution result and outgoing event in ONE database transaction.
@@ -112,15 +113,21 @@ class EventOutbox:
         key = routing_key or ACTION_RESULT_KEY
         result_json = json.dumps(result) if result is not None else None
 
-        # Build canonical Step 14 execution result event payload
+        user_status = "successfull" if str(status).upper() in ("SUCCESS", "SUCCESSFULL") else "failed"
+        resolved_device_name = str(device_name or device_id)
+
+        # Build canonical execution result event payload with user-specified schema
         payload = {
+            "device_name": resolved_device_name,
+            "device name": resolved_device_name,
+            "status": "successfull" if str(status).lower() in ("success", "successfull") else status,
+            "statue": user_status,
+            "action": action,
             "event_id": stable_event_id,
             "event_type": event_type,
             "hub_id": HUB_ID,
             "action_id": action_id,
             "device_id": device_id,
-            "action": action,
-            "status": status,
             "scheduled_at": scheduled_at or now,
             "executed_at": now,
         }
@@ -220,7 +227,7 @@ class EventOutbox:
                 "event_type": r["event_type"],
                 "routing_key": r["routing_key"],
                 "payload": payload,
-                "status": payload.get("status", r["status"]),
+                "status": r["status"],
                 "outbox_status": r["status"],
                 "retry_count": r["retry_count"],
                 "created_at": r["created_at"],

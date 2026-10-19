@@ -209,7 +209,8 @@ class ActionDispatcher:
                 if attempt <= self.max_retries:
                     await asyncio.sleep(0.5 * attempt)
 
-        exec_status = "SUCCESS" if success else "FAILED"
+        dev_display_name = action.get("device_name") or target_name or device_id
+        exec_status = "successfull" if success else "FAILED"
         scheduled_at = action.get("scheduled_at")
         executed_at = datetime.now(timezone.utc).isoformat()
 
@@ -224,6 +225,7 @@ class ActionDispatcher:
                     schedule_id=schedule_id,
                     action_id=action_id or "",
                     device_id=device_id,
+                    device_name=dev_display_name,
                     action=action_name,
                     status=exec_status,
                     scheduled_at=scheduled_at,

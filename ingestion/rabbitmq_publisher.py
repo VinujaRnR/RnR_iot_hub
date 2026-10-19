@@ -220,19 +220,23 @@ class RabbitMQPublisher:
         routing_key: Optional[str] = None,
         event_id: Optional[str] = None,
         event_type: str = "action_result",
+        device_name: Optional[str] = None,
     ) -> bool:
         """
         Step 14: Publishes durable execution result event.
         
         Example format:
         {
+          "device_name": "light_glow_1",
+          "device name": "light_glow_1",
+          "status": "successfull",
+          "statue": "successfull",
+          "action": "LIGHT_ON",
           "event_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
           "event_type": "action_result",
           "hub_id": "hub-01",
           "action_id": "action-001",
           "device_id": "98a316e6b658",
-          "action": "LIGHTS_ON",
-          "status": "SUCCESS",
           "scheduled_at": "2026-10-09T09:56:00+05:30",
           "executed_at": "2026-10-09T09:56:01+05:30"
         }
@@ -242,14 +246,20 @@ class RabbitMQPublisher:
         now = executed_at or datetime.now(timezone.utc).isoformat()
         sched_time = scheduled_at or now
 
+        user_status = "successfull" if str(status).upper() in ("SUCCESS", "SUCCESSFULL") else "failed"
+        resolved_device_name = str(device_name or device_id)
+
         payload = {
+            "device_name": resolved_device_name,
+            "device name": resolved_device_name,
+            "status": status,
+            "statue": user_status,
+            "action": action,
             "event_id": stable_event_id,
             "event_type": event_type,
             "hub_id": self.hub_id,
             "action_id": action_id,
             "device_id": device_id,
-            "action": action,
-            "status": status,
             "scheduled_at": sched_time,
             "executed_at": now,
         }

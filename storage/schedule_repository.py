@@ -398,7 +398,7 @@ class ScheduleRepository:
 
             # Update scheduled_action status if associated
             if schedule_id and action_id:
-                action_status = "COMPLETED" if status == "SUCCESS" else "FAILED"
+                action_status = "COMPLETED" if str(status).upper() in ("SUCCESS", "SUCCESSFULL") else "FAILED"
                 await conn.execute(
                     "UPDATE scheduled_actions SET status = ?, executed_at = ? WHERE schedule_id = ? AND action_id = ?",
                     (action_status, now, schedule_id, action_id),

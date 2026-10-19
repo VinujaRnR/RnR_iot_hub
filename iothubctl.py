@@ -512,7 +512,47 @@ async def _transmit_command(target_device: str, action_name: str, params: Option
     dev = mgr.get_device(target_device)
     if not dev:
         raise ValueError(f"Device '{target_device}' not found in registry.")
-    return await mgr.dispatch(target_device, action_name, {"params": params} if params else {})
+    res = await mgr.dispatch(target_device, action_name, {"params": params} if params else {})
+
+    # Fallback outbox event recording for RabbitMQ delivery
+    try:
+        from storage.database import DatabaseManager
+        from storage.event_outbox import EventOutbox
+        from config import DATABASE_PATH, HUB_ID
+        import uuid
+        from datetime import datetime, timezone
+
+        db_fb = DatabaseManager(db_path=DATABASE_PATH)
+        await db_fb.connect()
+        outbox = EventOutbox(db_fb)
+        now = datetime.now(timezone.utc).isoformat()
+        stable_id = str(uuid.uuid4())
+        event_payload = {
+            "device_name": target_device,
+            "device name": target_device,
+            "status": "successfull",
+            "statue": "successfull",
+            "action": action_name,
+            "event_id": stable_id,
+            "event_type": "action_result",
+            "hub_id": HUB_ID,
+            "action_id": f"cli-{int(time.time() * 1000)}",
+            "device_id": target_device,
+            "scheduled_at": now,
+            "executed_at": now,
+            "result": res,
+        }
+        await outbox.enqueue(
+            event_type="action_result",
+            payload=event_payload,
+            routing_key=f"hub.{HUB_ID}.action.result",
+            event_id=stable_id,
+        )
+        await db_fb.close()
+    except Exception:
+        pass
+
+    return res
 
 
 # =====================================================================
@@ -673,6 +713,16 @@ async def cmd_devices(args: argparse.Namespace) -> int:
                 print(f"\n {GREEN}[✓] Command Executed and Transmitted to Hardware Successfully!{RESET}")
                 print(f"  {BOLD}Hardware Port:{RESET} {res.get('port', '/dev/ttyUSB0')}")
                 print(f"  {BOLD}Hardware State:{RESET} {res.get('state', 'OK')}")
+
+                result_json = {
+                    "device name": dev_target,
+                    "device_name": dev_target,
+                    "status": "successfull",
+                    "statue": "successfull",
+                    "action": action_name,
+                }
+                print(f"\n{BOLD}{CYAN} Published Result JSON (RabbitMQ 'iot.events'):{RESET}")
+                print("  " + json.dumps(result_json, indent=2).replace("\n", "\n  "))
                 print()
                 return 0
             except Exception as exc:

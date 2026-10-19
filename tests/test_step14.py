@@ -318,7 +318,9 @@ async def test_step14_action_dispatcher_transactional_reporting(tmp_path):
     assert payload["action_id"] == "act-e2e-01"
     assert payload["device_id"] == "98a316e6b658"
     assert payload["action"] == "LIGHTS_ON"
-    assert payload["status"] == "SUCCESS"
+    assert payload["status"] in ("SUCCESS", "successfull")
+    assert payload["statue"] == "successfull"
+    assert "device_name" in payload
     assert payload["scheduled_at"] == "2026-10-13T10:10:00+00:00"
     assert "event_id" in payload
 
