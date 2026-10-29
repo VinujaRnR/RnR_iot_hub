@@ -267,7 +267,7 @@ class RabbitMQPublisher:
     async def publish_action_result(
         self,
         action_id: str,
-        schedule_id: Optional[str],
+        schedule_id: Optional[str] = None,
         device_id: str,
         action: str,
         status: str,

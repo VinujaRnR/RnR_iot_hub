@@ -509,6 +509,7 @@ class RabbitMQConsumer:
                     try:
                         await self.publisher.publish_action_result(
                             action_id=cmd_id,
+                            schedule_id=None,
                             device_id=dev_id,
                             action=act_name,
                             status=status_str,
