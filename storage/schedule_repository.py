@@ -51,6 +51,16 @@ class ScheduleRepository:
     def __init__(self, db: DatabaseManager):
         self.db = db
 
+    async def clear_all_schedules(self) -> None:
+        """
+        Removes all saved schedules and scheduled actions from the database.
+        Used when an immediate direct command override is received.
+        """
+        async with self.db.transaction() as conn:
+            await conn.execute("DELETE FROM scheduled_actions")
+            await conn.execute("DELETE FROM schedules")
+        logger.info("All saved schedules and scheduled actions successfully cleared from database.")
+
     async def save_schedule(
         self,
         schedule_id: str,

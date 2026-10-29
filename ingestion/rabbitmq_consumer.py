@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, TYPE_CHECKING
 import aio_pika
@@ -247,8 +248,14 @@ class RabbitMQConsumer:
             return
 
         rk = getattr(message, "routing_key", "")
+        # Check if message is a direct command or command batch
+        is_direct_command = (
+            "command" in payload
+            or "commands" in payload
+            or ("command_id" in payload and ("action" in payload or "actions" in payload))
+        )
         # Check if message is a production schedule (contains schedules, production_orders, sub_resources, or schedule routing key)
-        is_schedule = (
+        is_schedule = not is_direct_command and (
             "production_orders" in payload
             or "production_order" in payload
             or "sub_resources" in payload
@@ -400,17 +407,118 @@ class RabbitMQConsumer:
         payload: Dict[str, Any],
         raw_body: str,
     ) -> None:
-        """Handles direct batch command messages for backward compatibility."""
+        """
+        Handles direct command messages:
+        1. Removes all saved schedules from SQLite.
+        2. Notifies schedule engine to reset schedule execution state.
+        3. Cleans up cached schedule files on disk.
+        4. Normalizes and validates the incoming command.
+        5. Executes the action on the target device via CommandRouter.
+        6. Updates latest action_status and publishes action_result event.
+        7. Manually acknowledges the message.
+        """
         from ingestion.validator import validate_incoming_message, MessageValidationError
         from ingestion.normalizer import normalize_payload
 
         try:
+            # Step 1: Remove all saved schedules and scheduled actions
+            if self.schedule_repo and hasattr(self.schedule_repo, "clear_all_schedules"):
+                try:
+                    await self.schedule_repo.clear_all_schedules()
+                    logger.info("[COMMAND OVERRIDE] Successfully removed all saved schedules from SQLite.")
+                except Exception as sched_err:
+                    logger.error("Failed to clear saved schedules on command: %s", sched_err)
+
+            # Step 2: Wake schedule engine to reset any in-memory state
+            if self.schedule_engine and hasattr(self.schedule_engine, "notify_schedule_updated"):
+                try:
+                    self.schedule_engine.notify_schedule_updated()
+                except Exception as eng_err:
+                    logger.warning("Failed to notify schedule engine of cleared schedules: %s", eng_err)
+
+            # Step 3: Clean up cached schedule files on disk so old schedules aren't auto-restored
+            for path in ("/var/lib/iothub/last_rabbitmq_message.json", "/tmp/last_rabbitmq_message.json"):
+                if os.path.exists(path):
+                    try:
+                        with open(path, "w", encoding="utf-8") as f:
+                            json.dump({
+                                "received_at": datetime.now(timezone.utc).isoformat(),
+                                "routing_key": getattr(message, "routing_key", "iot.command"),
+                                "detected_type": "COMMAND_OVERRIDE",
+                                "raw_body": raw_body,
+                                "payload": payload,
+                            }, f, indent=2)
+                    except Exception:
+                        pass
+
+            # Step 4: Normalize and validate command payload
             normalized = normalize_payload(payload, default_hub_id=self.hub_id)
             validated_msg = validate_incoming_message(normalized, expected_hub_id=self.hub_id)
 
+            # Step 5: Execute action on target device via CommandRouter
+            results = []
             if self.router:
                 results = await self.router.route_message(validated_msg)
-                logger.info("Processed command batch %s (%d actions)", validated_msg.message_id, len(results))
+                logger.info("Executed direct command %s (%d actions)", validated_msg.message_id, len(results))
+
+            # Step 6: Record execution, update action_status, and publish result
+            for cmd in validated_msg.commands:
+                cmd_id = cmd.command_id
+                dev_id = cmd.device_id
+                act_name = cmd.action
+                params = cmd.parameters or {}
+                dev_name = params.get("device_name") or dev_id
+                now_iso = datetime.now(timezone.utc).isoformat()
+
+                matched_res = next((r for r in results if r.get("command_id") == cmd_id), {})
+                status_str = "successfull" if matched_res.get("status") == "success" else "failed"
+
+                event_payload = {
+                    "device_name": dev_name,
+                    "device name": dev_name,
+                    "status": status_str,
+                    "statue": status_str,
+                    "action": act_name,
+                    "event_id": str(uuid.uuid4()),
+                    "event_type": "action_result",
+                    "hub_id": self.hub_id,
+                    "action_id": cmd_id,
+                    "device_id": dev_id,
+                    "scheduled_at": now_iso,
+                    "executed_at": now_iso,
+                    "result": matched_res.get("result", {}),
+                }
+                if matched_res.get("error"):
+                    event_payload["error"] = matched_res["error"]
+
+                # Store latest status in action_status table
+                if self.schedule_repo and hasattr(self.schedule_repo, "save_device_action_status"):
+                    try:
+                        await self.schedule_repo.save_device_action_status(
+                            device_name=dev_name,
+                            action=act_name,
+                            status=status_str,
+                            payload=event_payload,
+                            updated_at=now_iso,
+                        )
+                    except Exception as st_err:
+                        logger.warning("Could not update action_status table: %s", st_err)
+
+                # Publish action result event
+                if self.publisher and hasattr(self.publisher, "publish_action_result"):
+                    try:
+                        await self.publisher.publish_action_result(
+                            action_id=cmd_id,
+                            device_id=dev_id,
+                            action=act_name,
+                            status=status_str,
+                            result=matched_res.get("result"),
+                            error_message=matched_res.get("error"),
+                            routing_key=f"hub.{self.hub_id}.action.result",
+                            device_name=dev_name,
+                        )
+                    except Exception as pub_err:
+                        logger.warning("Could not publish action result: %s", pub_err)
 
             await self._safe_ack(message)
 

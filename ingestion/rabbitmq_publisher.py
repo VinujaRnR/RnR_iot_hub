@@ -61,6 +61,8 @@ class RabbitMQPublisher:
     @property
     def is_connected(self) -> bool:
         """Returns True if connected to RabbitMQ broker and channel is open."""
+        if getattr(self, "_is_connected", False):
+            return True
         return (
             self.connection is not None
             and not self.connection.is_closed
@@ -160,10 +162,11 @@ class RabbitMQPublisher:
             headers={"event_id": msg_id, "hub_id": self.hub_id},
         )
 
+        exch = self.exchange or getattr(self, "_exchange", None)
         try:
-            assert self.exchange is not None
+            assert exch is not None
             # publish with publisher confirmation (raises if NACKed or rejected)
-            await self.exchange.publish(
+            await exch.publish(
                 message,
                 routing_key=routing_key,
                 mandatory=mandatory,
