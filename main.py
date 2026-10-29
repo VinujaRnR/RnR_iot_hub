@@ -154,6 +154,8 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
                     from ingestion.schedule_normalizer import ScheduleNormalizer
                     with open(last_msg_path, "r", encoding="utf-8") as f:
                         meta = json.load(f)
+                    if meta.get("detected_type") != "SCHEDULE":
+                        continue
                     payload = meta.get("payload", {})
                     raw_body = meta.get("raw_body", "")
                     val = ScheduleValidator().validate(payload)

@@ -12,7 +12,9 @@ fi
 echo "Copying updated modules from $SRC_DIR to $TARGET_DIR..."
 cp -r "$SRC_DIR/ingestion" "$TARGET_DIR/"
 cp -r "$SRC_DIR/storage" "$TARGET_DIR/"
-chown -R iothub:iothub "$TARGET_DIR/ingestion" "$TARGET_DIR/storage"
+cp "$SRC_DIR/main.py" "$TARGET_DIR/"
+cp "$SRC_DIR/config.py" "$TARGET_DIR/"
+chown -R iothub:iothub "$TARGET_DIR/ingestion" "$TARGET_DIR/storage" "$TARGET_DIR/main.py" "$TARGET_DIR/config.py"
 
 echo "Restarting iothubd systemd service..."
 systemctl restart iothubd
