@@ -67,10 +67,11 @@ def get_serial_connection():
 
 def send_command(ser, cmd_char: str) -> str:
     ser.reset_input_buffer()
-    ser.write(cmd_char.encode("ascii"))
+    cmd = (cmd_char.strip() + "\n").encode("ascii")
+    ser.write(cmd)
     ser.flush()
     # Read response line
-    time.sleep(0.1)
+    time.sleep(0.15)
     line = ser.readline().decode("utf-8", errors="ignore").strip()
     return line
 

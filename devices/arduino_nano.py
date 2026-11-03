@@ -126,14 +126,20 @@ class ArduinoNanoDevice:
         )
 
         # Extract parameters for command payload
+        # Strip internal hub metadata keys so the serial payload stays small (<100 bytes)
+        # and never overflows microcontroller hardware RX buffers.
+        INTERNAL_KEYS = (
+            "target_device", "command_id", "action_id", "state", "params", "device",
+            "channel_key", "device_type", "device_number", "device_name",
+        )
         if "params" in parameters and isinstance(parameters["params"], dict):
-            clean_params = dict(parameters["params"])
+            clean_params = {k: v for k, v in parameters["params"].items() if k not in INTERNAL_KEYS}
         elif "params" in parameters and parameters["params"] is None:
             clean_params = {}
         else:
             clean_params = {
                 k: v for k, v in parameters.items()
-                if k not in ("target_device", "command_id", "action_id", "state", "params", "device")
+                if k not in INTERNAL_KEYS
             }
 
         # Build command payload matching exact specification:

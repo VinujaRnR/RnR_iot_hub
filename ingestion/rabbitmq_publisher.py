@@ -74,7 +74,7 @@ class RabbitMQPublisher:
     async def connect(self) -> None:
         """Connects to RabbitMQ and enables publisher confirmations."""
         logger.info("Publisher connecting to RabbitMQ broker at %s...", self.url)
-        self.connection = await aio_pika.connect_robust(self.url)
+        self.connection = await asyncio.wait_for(aio_pika.connect_robust(self.url), timeout=7.0)
         # Enable publisher confirms for guaranteed delivery
         self.channel = await self.connection.channel(publisher_confirms=True)
         self.exchange = await self.channel.declare_exchange(
@@ -268,9 +268,9 @@ class RabbitMQPublisher:
         self,
         action_id: str,
         schedule_id: Optional[str] = None,
-        device_id: str,
-        action: str,
-        status: str,
+        device_id: str = "",
+        action: str = "",
+        status: str = "successfull",
         result: Optional[Dict[str, Any]] = None,
         error_message: Optional[str] = None,
         scheduled_at: Optional[str] = None,
