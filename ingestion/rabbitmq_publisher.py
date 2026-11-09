@@ -88,9 +88,11 @@ class RabbitMQPublisher:
         )
 
         # Declare durable action_status queue bound to results exchange so messages can be retrieved anytime
+        # Bind exclusively to action.result (status json)
         try:
             status_queue = await self.channel.declare_queue("action_status", durable=True)
-            await status_queue.bind(self.exchange, routing_key="hub.#")
+            await status_queue.bind(self.exchange, routing_key=f"hub.{self.hub_id}.action.result")
+            await status_queue.bind(self.exchange, routing_key="hub.*.action.result")
             await status_queue.bind(self.exchange, routing_key="action_status.#")
             await status_queue.bind(self.exchange, routing_key="action_status")
         except Exception as q_err:
