@@ -280,8 +280,8 @@ class ScheduleEngine:
         """
         Signals the scheduler loop that a new schedule has been imported,
         waking it up immediately without waiting for the next polling interval.
+        Maintains known device states to prevent duplicate replay of current states.
         """
-        self._last_device_states.clear()
         self._wake_event.set()
         self._watcher_wake_event.set()
 

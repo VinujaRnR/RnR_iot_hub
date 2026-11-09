@@ -108,7 +108,7 @@ class ArduinoNanoDevice:
                 "port": self.port,
             }
 
-        if action_upper == "STATUS":
+        if action_upper in ("STATUS", "GET_STATUS"):
             return {
                 "status": "SUCCESS",
                 "action": "STATUS",

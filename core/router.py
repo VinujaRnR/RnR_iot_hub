@@ -50,7 +50,7 @@ class CommandRouter:
                     parameters=cmd.parameters,
                 )
                 cmd_result["status"] = "success"
-                cmd_result["result"] = device_response.get("result", {})
+                cmd_result["result"] = device_response.get("result") if "result" in device_response else device_response
                 logger.info("Executed %s on %s: %s", cmd.action, cmd.device_id, cmd_result["result"])
             except DeviceNotFoundError as err:
                 cmd_result["status"] = "error"
