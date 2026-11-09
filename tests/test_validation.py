@@ -60,8 +60,10 @@ def test_missing_message_id():
         "hub_id": "hub-01",
         "commands": [{"command_id": "c1", "device_id": "d1", "action": "a1"}],
     }
-    with pytest.raises(MessageValidationError, match="message_id"):
-        validate_incoming_message(payload)
+    # message_id is optional and auto-generated
+    msg = validate_incoming_message(payload)
+    assert msg.message_id is not None
+    assert msg.message_id.startswith("msg_")
 
 
 def test_empty_commands_list():

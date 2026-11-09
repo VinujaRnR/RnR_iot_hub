@@ -230,8 +230,8 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
     )
     supervisor.consumer = consumer
 
-    # 9. Initialize & Start Local Management API (127.0.0.1:8765, Read-Only)
-    logger.info("[INIT] Starting Local Management API on http://%s:%d...", API_HOST, API_PORT)
+    # 9. Initialize & Start Local Management API (Read-Only)
+    logger.info("[INIT] Starting Local Management API on http://%s:%d...", settings.API_HOST, settings.API_PORT)
     management_app = create_app(
         db=db,
         schedule_repo=schedule_repo,
@@ -242,8 +242,8 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
         publisher=publisher,
     )
     api_server, api_task = start_background_api(
-        host=API_HOST,
-        port=API_PORT,
+        host=settings.API_HOST,
+        port=settings.API_PORT,
         application=management_app,
     )
 

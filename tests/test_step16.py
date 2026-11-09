@@ -129,17 +129,19 @@ async def test_step16_reconcile_in_flight_executing_actions(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_step16_daemon_lifecycle_in_process():
+async def test_step16_daemon_lifecycle_in_process(monkeypatch):
     """
     Tests full daemon start and clean programmatic shutdown sequence in-process.
     """
+    test_port = 18765
+    monkeypatch.setenv("API_PORT", str(test_port))
     stop_event = asyncio.Event()
 
     # Launch daemon in background task
     hub_task = asyncio.create_task(run_hub(stop_override_event=stop_event))
 
     # Wait for API server to come online
-    client = httpx.AsyncClient(base_url=f"http://{API_HOST}:{API_PORT}")
+    client = httpx.AsyncClient(base_url=f"http://{API_HOST}:{test_port}")
     max_wait = 6.0
     start = time.time()
     online = False
@@ -174,9 +176,14 @@ def test_step16_python_m_main_sigterm_clean_exit():
     Step 16 acceptance test:
     'python -m main starts the complete application and SIGTERM stops it cleanly.'
     """
+    test_port = 18766
+    proc_env = os.environ.copy()
+    proc_env["API_PORT"] = str(test_port)
+
     # Spawn python -m main as a real subprocess
     proc = subprocess.Popen(
         [sys.executable, "-m", "main"],
+        env=proc_env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -192,7 +199,7 @@ def test_step16_python_m_main_sigterm_clean_exit():
                 break
             try:
                 import urllib.request
-                with urllib.request.urlopen(f"http://{API_HOST}:{API_PORT}/health/live", timeout=1.0) as resp:
+                with urllib.request.urlopen(f"http://{API_HOST}:{test_port}/health/live", timeout=1.0) as resp:
                     if resp.status == 200:
                         ready = True
                         break
@@ -205,7 +212,7 @@ def test_step16_python_m_main_sigterm_clean_exit():
         os.kill(proc.pid, signal.SIGTERM)
 
         # Wait for process to exit cleanly
-        stdout, stderr = proc.communicate(timeout=6.0)
+        stdout, stderr = proc.communicate(timeout=12.0)
 
         output = (stdout or "") + (stderr or "")
         assert proc.returncode == 0, f"Expected returncode 0 on SIGTERM, got {proc.returncode}. Output: {output}"

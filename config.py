@@ -93,6 +93,7 @@ class Settings(BaseSettings):
     RABBITMQ_COMMAND_ROUTING_KEY: Optional[str] = Field(default="iot.command", description="Inbound routing key")
     RABBITMQ_RESULTS_EXCHANGE: str = Field(default="iot.events", description="Exchange for publishing events/results")
     RABBITMQ_DEADLETTER_EXCHANGE: str = Field(default="iot.deadletter", description="Dead-letter exchange for unprocessable messages")
+    ENABLE_SCHEDULE_ACCEPTED_EVENT: bool = Field(default=False, description="Whether to publish schedule.accepted events to RabbitMQ")
 
     # ==========================================
     # Operational & Hardware Hub Settings
@@ -215,3 +216,4 @@ RESULTS_EXCHANGE = settings.RABBITMQ_RESULTS_EXCHANGE
 DEADLETTER_EXCHANGE = settings.RABBITMQ_DEADLETTER_EXCHANGE
 SCHEDULE_ACCEPTED_KEY = f"hub.{HUB_ID}.schedule.accepted"
 ACTION_RESULT_KEY = f"hub.{HUB_ID}.action.result"
+ENABLE_SCHEDULE_ACCEPTED_EVENT = settings.ENABLE_SCHEDULE_ACCEPTED_EVENT

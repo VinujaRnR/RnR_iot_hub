@@ -74,6 +74,7 @@ class RabbitMQConsumer:
         schedule_repo: Optional[ScheduleRepository] = None,
         publisher: Optional[RabbitMQPublisher] = None,
         schedule_engine: Optional[Any] = None,
+        enable_schedule_accepted_event: Optional[bool] = None,
     ):
         self.url = url
         self.queue_name = queue_name
@@ -88,6 +89,12 @@ class RabbitMQConsumer:
         self.schedule_repo = schedule_repo or (ScheduleRepository(db) if db else None)
         self.publisher = publisher
         self.schedule_engine = schedule_engine
+
+        if enable_schedule_accepted_event is None:
+            from config import ENABLE_SCHEDULE_ACCEPTED_EVENT
+            self.enable_schedule_accepted_event = ENABLE_SCHEDULE_ACCEPTED_EVENT
+        else:
+            self.enable_schedule_accepted_event = enable_schedule_accepted_event
 
         # Validation & Normalization engines
         self.validator = ScheduleValidator(expected_hub_id=self.hub_id)
@@ -385,8 +392,8 @@ class RabbitMQConsumer:
             len(normalized_actions),
         )
 
-        # Step 8: Publish schedule acceptance event
-        if self.publisher:
+        # Step 8: Publish schedule acceptance event (disabled by default; only action_result events are published)
+        if self.enable_schedule_accepted_event and self.publisher:
             try:
                 await self.publisher.publish_schedule_accepted(
                     schedule_id=validated_schedule.schedule_id,

@@ -149,6 +149,7 @@ async def test_full_schedule_ingestion_and_acceptance(temp_db, valid_production_
         db=temp_db,
         schedule_repo=repo,
         publisher=publisher,
+        enable_schedule_accepted_event=True,
     )
 
     msg = MockIncomingMessage(body=json.dumps(valid_production_schedule_payload))
@@ -260,6 +261,7 @@ async def test_duplicate_and_stale_revision_handling(temp_db, valid_production_s
         db=temp_db,
         schedule_repo=repo,
         publisher=publisher,
+        enable_schedule_accepted_event=True,
     )
 
     # 1. Ingest revision 1

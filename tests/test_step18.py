@@ -114,6 +114,7 @@ async def test_step18_01_rabbitmq_schedule_delivery(temp_db, sample_schedule_raw
         db=temp_db,
         schedule_repo=repo,
         publisher=publisher,
+        enable_schedule_accepted_event=True,
     )
 
     msg = MockIncomingMessage(body=json.dumps(sample_schedule_raw))
