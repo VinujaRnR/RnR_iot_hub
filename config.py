@@ -177,6 +177,19 @@ class Settings(BaseSettings):
 
         return self
 
+    def update_rabbitmq_password(self, password: str) -> None:
+        """Dynamically updates the broker password and regenerates RABBITMQ_URL."""
+        self.RABBITMQ_PASSWORD = password
+        scheme = "amqps" if self.RABBITMQ_USE_SSL else "amqp"
+        vhost_clean = self.RABBITMQ_VHOST.lstrip("/")
+        vhost_encoded = quote(vhost_clean, safe="") if vhost_clean else ""
+        user_encoded = quote(self.RABBITMQ_USER, safe="")
+        password_encoded = quote(password, safe="")
+        self.RABBITMQ_URL = (
+            f"{scheme}://{user_encoded}:{password_encoded}@"
+            f"{self.RABBITMQ_HOST}:{self.RABBITMQ_AMQP_PORT}/{vhost_encoded}"
+        )
+
 
 def load_settings() -> Settings:
     """
@@ -227,3 +240,11 @@ MIDDLEWARE_URL = settings.MIDDLEWARE_URL or ""
 MIDDLEWARE_VERIFY_SSL = settings.MIDDLEWARE_VERIFY_SSL
 MIDDLEWARE_TIMEOUT_SECONDS = settings.MIDDLEWARE_TIMEOUT_SECONDS
 OFFLINE_LEASE_GRACE_HOURS = settings.OFFLINE_LEASE_GRACE_HOURS
+
+
+def update_rabbitmq_password(password: str) -> None:
+    """Updates runtime password and recomputes module-level RabbitMQ variables."""
+    settings.update_rabbitmq_password(password)
+    global RABBITMQ_PASSWORD, RABBITMQ_URL
+    RABBITMQ_PASSWORD = settings.RABBITMQ_PASSWORD
+    RABBITMQ_URL = settings.RABBITMQ_URL

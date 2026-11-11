@@ -642,7 +642,6 @@ class IoTInstaller:
             "# ==========================================\n",
         ]
         sensitive_keys = {
-            "RABBITMQ_PASSWORD",
             "AUTH_TOKEN",
             "API_TOKEN",
             "JWT_SECRET",
@@ -652,7 +651,7 @@ class IoTInstaller:
             k_upper = k.upper()
             if (
                 k_upper in sensitive_keys
-                or "PASSWORD" in k_upper
+                or "JWT" in k_upper
                 or "SECRET" in k_upper
                 or "TOKEN" in k_upper
             ):

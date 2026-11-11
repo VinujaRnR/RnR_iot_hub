@@ -1648,7 +1648,11 @@ async def cmd_hub(args: argparse.Namespace) -> int:
 
             # Default: RabbitMQ-based activation
             print(f"\n{BOLD}{CYAN}RN Solutions — RNHub Activation{RESET}")
-            from config import RABBITMQ_HOST, RABBITMQ_AMQP_PORT, RABBITMQ_URL
+            from config import RABBITMQ_HOST, RABBITMQ_AMQP_PORT, RABBITMQ_URL, update_rabbitmq_password
+            db_rmq_pass = await cfg.get_setting("rabbitmq.password")
+            if db_rmq_pass:
+                update_rabbitmq_password(db_rmq_pass)
+                from config import RABBITMQ_URL
             print(f"Connecting to middleware via RabbitMQ ({RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT})...")
             print(f"Sending heartbeat with activation code to middleware...")
 
@@ -1754,7 +1758,11 @@ async def cmd_hub(args: argparse.Namespace) -> int:
 
             # Default: RabbitMQ sync
             print(f"\n{BOLD}{CYAN}Synchronizing configuration from Django middleware via RabbitMQ...{RESET}")
-            from config import RABBITMQ_URL
+            from config import RABBITMQ_URL, update_rabbitmq_password
+            db_rmq_pass = await cfg.get_setting("rabbitmq.password")
+            if db_rmq_pass:
+                update_rabbitmq_password(db_rmq_pass)
+                from config import RABBITMQ_URL
             from core.registration_listener import RegistrationListener
 
             result = await RegistrationListener.sync_via_rabbitmq(

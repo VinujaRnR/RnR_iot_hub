@@ -508,6 +508,16 @@ class RegistrationListener:
 
         cfg = ConfigRepository(db)
         reg_repo = RegistrationRepository(db, cfg)
+
+        try:
+            db_rmq_pass = await cfg.get_setting("rabbitmq.password")
+            if db_rmq_pass:
+                from config import update_rabbitmq_password
+                update_rabbitmq_password(db_rmq_pass)
+                from config import RABBITMQ_URL as current_rmq_url
+                url = current_rmq_url
+        except Exception:
+            pass
         reg = await reg_repo.get_registration()
         resolved_hub_id = hub_id or await cfg.get_setting("hub.id") or (reg.get("hub_id") if reg else None) or HUB_ID
         resolved_hub_uuid = hub_uuid or await cfg.get_setting("hub.uuid") or (reg.get("hub_uuid") if reg else None) or HUB_UUID
@@ -772,6 +782,16 @@ class RegistrationListener:
 
         cfg = ConfigRepository(db)
         reg_repo = RegistrationRepository(db, cfg)
+
+        try:
+            db_rmq_pass = await cfg.get_setting("rabbitmq.password")
+            if db_rmq_pass:
+                from config import update_rabbitmq_password
+                update_rabbitmq_password(db_rmq_pass)
+                from config import RABBITMQ_URL as current_rmq_url
+                url = current_rmq_url
+        except Exception:
+            pass
         reg = await reg_repo.get_registration()
         resolved_hub_id = hub_id or await cfg.get_setting("hub.id") or (reg.get("hub_id") if reg else None) or HUB_ID
         resolved_hub_uuid = hub_uuid or await cfg.get_setting("hub.uuid") or (reg.get("hub_uuid") if reg else None) or HUB_UUID

@@ -149,6 +149,16 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
         guard = RegistrationGuard(reg_repo, lease_grace_hours=settings.OFFLINE_LEASE_GRACE_HOURS)
         logger.info("[INIT] SQLite storage ready (WAL mode verified).")
 
+        # Load encrypted RabbitMQ credentials from SQLite if present
+        try:
+            db_rmq_pass = await reg_repo.config_repo.get_setting("rabbitmq.password")
+            if db_rmq_pass:
+                from config import update_rabbitmq_password
+                update_rabbitmq_password(db_rmq_pass)
+                logger.info("[INIT] Loaded encrypted RabbitMQ broker credentials from SQLite.")
+        except Exception as exc:
+            logger.debug("[INIT] Could not load rabbitmq.password from SQLite: %s", exc)
+
         # Registration & Activation check (RNHub V2)
         reg_snapshot = await reg_repo.get_registration()
         op_state = await guard.get_operating_state()
