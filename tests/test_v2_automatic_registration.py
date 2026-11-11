@@ -409,17 +409,45 @@ async def test_v2_registration_listener_hello_with_pending_activation_code(env_v
 
     await listener.publish_hello()
 
-    # Should have published hub.hello and hub.activate
+    # Should have published hub.hello and heartbeat with activation code
     rk_map = {p["routing_key"]: p["payload"] for p in mock_ex.published}
     assert "hub.hub-3417ebc3b479.hello" in rk_map
     hello_payload = rk_map["hub.hub-3417ebc3b479.hello"]
     assert hello_payload["status"] == "pending_activation"
     assert hello_payload["activation_code"] == "ACT-3417-9921"
 
-    assert "hub.hub-3417ebc3b479.activate" in rk_map
-    act_payload = rk_map["hub.hub-3417ebc3b479.activate"]
-    assert act_payload["message_type"] == "hub.activate"
-    assert act_payload["activation_code"] == "ACT-3417-9921"
+    assert "hub.hub-3417ebc3b479.heartbeat" in rk_map
+    hb_payload = rk_map["hub.hub-3417ebc3b479.heartbeat"]
+    assert hb_payload["message_type"] == "heartbeat"
+    assert hb_payload["event_type"] == "heartbeat"
+    assert hb_payload["activation_code"] == "ACT-3417-9921"
+    assert hb_payload["status"] == "pending_activation"
+
+
+@pytest.mark.asyncio
+async def test_v2_registration_listener_periodic_heartbeat_sends_activation_code(env_v2):
+    """Validates that publish_heartbeat transmits activation_code as heartbeat."""
+    cfg = env_v2["cfg"]
+    await cfg.set_setting("auth.activation_code", "ACT-HEARTBEAT-777")
+
+    listener = RegistrationListener(
+        hub_id="hub-3417ebc3b479",
+        hub_uuid="3417ebc3-b479-4b11-8f93-911b2c349abc",
+        auto_config_manager=env_v2["manager"],
+    )
+    mock_ex = MockExchange("hub_results")
+    listener.ack_exchange = mock_ex
+    listener.channel = True
+
+    await listener.publish_heartbeat()
+
+    rk_map = {p["routing_key"]: p["payload"] for p in mock_ex.published}
+    assert "hub.hub-3417ebc3b479.heartbeat" in rk_map
+    hb = rk_map["hub.hub-3417ebc3b479.heartbeat"]
+    assert hb["message_type"] == "heartbeat"
+    assert hb["event_type"] == "heartbeat"
+    assert hb["activation_code"] == "ACT-HEARTBEAT-777"
+    assert hb["status"] == "pending_activation"
 
 
 @pytest.mark.asyncio

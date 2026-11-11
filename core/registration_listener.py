@@ -57,6 +57,7 @@ class RegistrationListener:
         config_exchange: str = "hub_config",
         ack_exchange: str = RESULTS_EXCHANGE,
         reconnect_delay: float = 5.0,
+        heartbeat_interval: float = 30.0,
     ):
         self.url = url
         self.hub_id = hub_id
@@ -67,6 +68,7 @@ class RegistrationListener:
         self.config_exchange_name = config_exchange
         self.ack_exchange_name = ack_exchange
         self.reconnect_delay = reconnect_delay
+        self.heartbeat_interval = heartbeat_interval
 
         # Single serialized configuration application lock
         self._config_lock = asyncio.Lock()
@@ -80,7 +82,9 @@ class RegistrationListener:
 
         self._running: bool = False
         self._consumer_tag: Optional[str] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
         self.last_hello_sent: Optional[str] = None
+        self.last_heartbeat_sent: Optional[str] = None
         self.last_config_received: Optional[Dict[str, Any]] = None
 
     @property
@@ -207,30 +211,97 @@ class RegistrationListener:
         self.last_hello_sent = hello_payload["timestamp"]
         logger.info("[REGISTRATION_LISTENER] Published hub.hello announcement to '%s' (v%d)", hello_routing_key, current_version)
 
-        # If activation code is pending, also publish explicit hub.activate
+        # If activation code is pending, broadcast heartbeat containing the activation code
         if pending_act_code:
-            act_payload = {
-                "message_type": "hub.activate",
-                "event_type": "hub.activate",
-                "action": "activate",
-                "activation_code": pending_act_code,
-                "hub_id": self.hub_id,
-                "hub_uuid": machine_uuid,
-                "installation_id": socket.gethostname(),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
-            act_msg = aio_pika.Message(
-                body=json.dumps(act_payload).encode("utf-8"),
-                content_type="application/json",
-                delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
-                headers={"event_type": "hub.activate", "action": "activate", "activation_code": pending_act_code, "hub_id": self.hub_id},
-            )
+            await self.publish_heartbeat(activation_code=pending_act_code)
+
+    async def publish_heartbeat(self, activation_code: Optional[str] = None) -> None:
+        """
+        Publishes periodic heartbeat message to RabbitMQ.
+        If an activation code is provided or stored locally in SQLite,
+        transmits the activation code in the heartbeat to trigger middleware registration.
+        """
+        if not self.ack_exchange or not self.channel:
+            return
+
+        current_version = 0
+        machine_uuid = self.hub_uuid or ""
+        mgr = self.auto_config_manager or self.config_sync_manager
+        pending_act = activation_code
+
+        if not pending_act and mgr and getattr(mgr, "config_repo", None):
             try:
-                await self.ack_exchange.publish(act_msg, routing_key=f"hub.{self.hub_id}.activate")
-                await self.ack_exchange.publish(act_msg, routing_key="hub.activate")
-                logger.info("[REGISTRATION_LISTENER] Published explicit hub.activate for pending code")
-            except Exception as act_pub_err:
-                logger.debug("Failed publishing hub.activate: %s", act_pub_err)
+                pending_act = await mgr.config_repo.get_setting("auth.activation_code")
+            except Exception:
+                pending_act = None
+
+        if mgr and getattr(mgr, "reg_repo", None):
+            reg = await mgr.reg_repo.get_registration()
+            if reg:
+                current_version = int(reg.get("config_version") or 0)
+                if not machine_uuid and reg.get("hub_uuid"):
+                    machine_uuid = reg.get("hub_uuid")
+
+        hb_payload = {
+            "message_type": "heartbeat",
+            "event_type": "heartbeat",
+            "hub_id": self.hub_id,
+            "hub_uuid": machine_uuid,
+            "installation_id": socket.gethostname(),
+            "status": "pending_activation" if pending_act else "online",
+            "config_version": current_version,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "hardware": {
+                "platform": platform.platform(),
+                "python": sys.version.split()[0],
+                "pid": os.getpid(),
+            },
+        }
+        if pending_act:
+            hb_payload["activation_code"] = pending_act
+            hb_payload["action"] = "activate"
+
+        body_bytes = json.dumps(hb_payload).encode("utf-8")
+        headers = {
+            "event_type": "heartbeat",
+            "message_type": "heartbeat",
+            "hub_id": self.hub_id,
+            "hub_uuid": machine_uuid,
+        }
+        if pending_act:
+            headers["activation_code"] = pending_act
+            headers["action"] = "activate"
+
+        msg = aio_pika.Message(
+            body=body_bytes,
+            content_type="application/json",
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            headers=headers,
+        )
+
+        routes = [
+            f"hub.{self.hub_id}.heartbeat",
+            "hub.heartbeat",
+            "heartbeat",
+        ]
+        if pending_act:
+            routes.extend([
+                f"hub.{self.hub_id}.activate",
+                "hub.activate",
+            ])
+
+        for rk in routes:
+            try:
+                await self.ack_exchange.publish(msg, routing_key=rk)
+            except Exception as hb_err:
+                logger.debug("Failed publishing heartbeat to '%s': %s", rk, hb_err)
+
+        self.last_heartbeat_sent = hb_payload["timestamp"]
+        logger.info(
+            "[REGISTRATION_LISTENER] Published heartbeat to RabbitMQ (status=%s%s)",
+            hb_payload["status"],
+            f", activation_code={pending_act}" if pending_act else "",
+        )
 
     async def publish_ack(
         self,
@@ -362,18 +433,40 @@ class RegistrationListener:
                 else:
                     await message.reject(requeue=False)
 
+    async def _heartbeat_loop(self) -> None:
+        """Periodically publishes heartbeats to RabbitMQ while running."""
+        while self._running:
+            try:
+                await asyncio.sleep(self.heartbeat_interval)
+                if not self._running:
+                    break
+                await self.publish_heartbeat()
+            except asyncio.CancelledError:
+                break
+            except Exception as hb_err:
+                logger.debug("[REGISTRATION_LISTENER] Heartbeat loop notice: %s", hb_err)
+
     async def start(self) -> None:
-        """Connects, publishes hello, and starts consuming with manual acknowledgments."""
+        """Connects, publishes hello and heartbeat, and starts consuming with manual acknowledgments."""
         self._running = True
         await self.connect()
         await self.publish_hello()
         assert self.queue is not None
         self._consumer_tag = await self.queue.consume(self.handle_message, no_ack=False)
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="registration_heartbeat_loop")
         logger.info("[REGISTRATION_LISTENER] Listening for configuration snapshots on '%s'...", self.queue_name)
 
     async def stop(self) -> None:
         """Stops the listener and closes RabbitMQ resources cleanly."""
         self._running = False
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
+
         if self.queue and self._consumer_tag:
             try:
                 await self.queue.cancel(self._consumer_tag)
@@ -512,8 +605,8 @@ class RegistrationListener:
                     raw = message.body.decode("utf-8", errors="replace")
                     parsed = json.loads(raw)
                     m_type = parsed.get("message_type") or parsed.get("event_type") or ""
-                    if m_type == "hub.activate":
-                        return  # ignore own activate message echo
+                    if m_type in ("heartbeat", "hub.activate"):
+                        return  # ignore own heartbeat/activate message echo
                     if not snapshot_future.done():
                         snapshot_future.set_result((parsed, raw, getattr(message, "headers", {})))
                 except Exception as parse_ex:
@@ -529,12 +622,13 @@ class RegistrationListener:
             ctag_reply = await reply_queue.consume(on_snapshot)
             ctag_config = await config_queue.consume(on_snapshot)
 
-            # Publish activation message
-            activation_payload = {
-                "message_type": "hub.activate",
-                "event_type": "hub.activate",
+            # Publish heartbeat with activation code
+            heartbeat_payload = {
+                "message_type": "heartbeat",
+                "event_type": "heartbeat",
                 "action": "activate",
                 "activation_code": activation_code,
+                "status": "pending_activation",
                 "hub_id": resolved_hub_id,
                 "hub_uuid": resolved_hub_uuid or "",
                 "installation_id": socket.gethostname(),
@@ -546,21 +640,31 @@ class RegistrationListener:
                 },
             }
             msg = aio_pika.Message(
-                body=json.dumps(activation_payload).encode("utf-8"),
+                body=json.dumps(heartbeat_payload).encode("utf-8"),
                 content_type="application/json",
                 delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
                 reply_to=reply_queue.name,
                 headers={
-                    "event_type": "hub.activate",
+                    "event_type": "heartbeat",
+                    "message_type": "heartbeat",
                     "action": "activate",
                     "activation_code": activation_code,
                     "hub_id": resolved_hub_id,
                     "hub_uuid": resolved_hub_uuid or "",
                 },
             )
-            await ack_exchange.publish(msg, routing_key=f"hub.{resolved_hub_id}.activate")
-            await ack_exchange.publish(msg, routing_key="hub.activate")
-            logger.info("[ACTIVATION] Published hub.activate via RabbitMQ for hub '%s'", resolved_hub_id)
+            for rk in (
+                f"hub.{resolved_hub_id}.heartbeat",
+                "hub.heartbeat",
+                "heartbeat",
+                f"hub.{resolved_hub_id}.activate",
+                "hub.activate",
+            ):
+                try:
+                    await ack_exchange.publish(msg, routing_key=rk)
+                except Exception as pub_err:
+                    logger.debug("Failed publishing to %s: %s", rk, pub_err)
+            logger.info("[ACTIVATION] Published heartbeat with activation code '%s' for hub '%s'", activation_code, resolved_hub_id)
 
             try:
                 payload, raw_body, headers = await asyncio.wait_for(snapshot_future, timeout=timeout)

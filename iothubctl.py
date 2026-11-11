@@ -1650,6 +1650,7 @@ async def cmd_hub(args: argparse.Namespace) -> int:
             print(f"\n{BOLD}{CYAN}RN Solutions — RNHub Activation{RESET}")
             from config import RABBITMQ_HOST, RABBITMQ_AMQP_PORT, RABBITMQ_URL
             print(f"Connecting to middleware via RabbitMQ ({RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT})...")
+            print(f"Sending heartbeat with activation code to middleware...")
 
             from core.registration_listener import RegistrationListener
             hub_id = await cfg.get_setting("hub.id", HUB_ID)
@@ -1689,9 +1690,9 @@ async def cmd_hub(args: argparse.Namespace) -> int:
                 print(f"{GREEN}Hub installation completed.{RESET}\n")
                 return 0
             elif st == "PENDING_ASYNC":
-                print(f" {GREEN}[✓]{RESET} Activation request sent to middleware via RabbitMQ.")
+                print(f" {GREEN}[✓]{RESET} Heartbeat with activation code sent to middleware via RabbitMQ.")
                 print(f" {GREEN}[✓]{RESET} Activation code saved locally in SQLite.")
-                print(f"     {DIM}The daemon (iothubd) will automatically finalize registration when middleware delivers the configuration.{RESET}\n")
+                print(f"     {DIM}The daemon (iothubd) will continue transmitting heartbeats with this activation code until registration configuration is delivered.{RESET}\n")
                 return 0
             else:
                 err = result.get("error") or result.get("detail", "Activation failed")

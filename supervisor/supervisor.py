@@ -273,36 +273,68 @@ class HubSupervisor:
 
         # Heartbeat check
         now = time.time()
-        if self.registration_client and (now - self._last_heartbeat_time >= self.heartbeat_interval):
+        if (now - self._last_heartbeat_time >= self.heartbeat_interval):
             self._last_heartbeat_time = now
-            try:
-                metrics = self.get_system_metrics()
-                hb_res = await self.registration_client.send_heartbeat(status_data={
-                    "status": metrics.get("status", "ONLINE"),
-                    "uptime_seconds": int(now - self.start_time),
-                })
-                # Check status returned
-                remote_status = hb_res.get("status", "active")
-                if remote_status in ("suspended", "retired") and self.reg_repo:
-                    await self.reg_repo.update_status(remote_status, actor="middleware_heartbeat")
-                    self.emit_alert("CRITICAL", f"Hub revoked by middleware (status: {remote_status}).")
 
-                # Check lease update
-                if hb_res.get("lease_expires_at") and self.reg_repo:
-                    await self.reg_repo.update_lease(hb_res["lease_expires_at"], actor="middleware_heartbeat")
+            # 1. RabbitMQ Heartbeat publication
+            if self.publisher and hasattr(self.publisher, "publish_event"):
+                try:
+                    pending_code = None
+                    if self.reg_repo and getattr(self.reg_repo, "config_repo", None):
+                        pending_code = await self.reg_repo.config_repo.get_setting("auth.activation_code")
+                    metrics = self.get_system_metrics()
+                    from config import HUB_ID
+                    hid = getattr(self.publisher, "hub_id", None) or HUB_ID
+                    hb_payload = {
+                        "message_type": "heartbeat",
+                        "event_type": "heartbeat",
+                        "hub_id": hid,
+                        "status": "pending_activation" if pending_code else "online",
+                        "installation_id": socket.gethostname(),
+                        "uptime_seconds": int(now - self.start_time),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "metrics": metrics,
+                    }
+                    if pending_code:
+                        hb_payload["activation_code"] = pending_code
+                        hb_payload["action"] = "activate"
+                    await self.publisher.publish_event(
+                        routing_key=f"hub.{hid}.heartbeat",
+                        payload=hb_payload,
+                    )
+                except Exception as hb_pub_err:
+                    logger.debug("RabbitMQ heartbeat notice: %s", hb_pub_err)
 
-                # Check for config version change
-                remote_cfg_ver = hb_res.get("config_version")
-                if self.reg_repo and remote_cfg_ver is not None:
-                    local_reg = await self.reg_repo.get_registration()
-                    local_ver = int(local_reg.get("config_version", 1)) if local_reg else 0
-                    if remote_cfg_ver > local_ver:
-                        logger.info("Newer configuration revision v%d detected from middleware (local: v%d). Synchronizing...", remote_cfg_ver, local_ver)
-                        new_cfg = await self.registration_client.get_configuration()
-                        await self.reg_repo.save_registration(new_cfg, actor="supervisor_sync")
-                        await self.registration_client.acknowledge_config(remote_cfg_ver)
-            except Exception as exc:
-                logger.debug("Middleware heartbeat notice: %s", exc)
+            # 2. HTTP Heartbeat fallback (if configured)
+            if self.registration_client:
+                try:
+                    metrics = self.get_system_metrics()
+                    hb_res = await self.registration_client.send_heartbeat(status_data={
+                        "status": metrics.get("status", "ONLINE"),
+                        "uptime_seconds": int(now - self.start_time),
+                    })
+                    # Check status returned
+                    remote_status = hb_res.get("status", "active")
+                    if remote_status in ("suspended", "retired") and self.reg_repo:
+                        await self.reg_repo.update_status(remote_status, actor="middleware_heartbeat")
+                        self.emit_alert("CRITICAL", f"Hub revoked by middleware (status: {remote_status}).")
+
+                    # Check lease update
+                    if hb_res.get("lease_expires_at") and self.reg_repo:
+                        await self.reg_repo.update_lease(hb_res["lease_expires_at"], actor="middleware_heartbeat")
+
+                    # Check for config version change
+                    remote_cfg_ver = hb_res.get("config_version")
+                    if self.reg_repo and remote_cfg_ver is not None:
+                        local_reg = await self.reg_repo.get_registration()
+                        local_ver = int(local_reg.get("config_version", 1)) if local_reg else 0
+                        if remote_cfg_ver > local_ver:
+                            logger.info("Newer configuration revision v%d detected from middleware (local: v%d). Synchronizing...", remote_cfg_ver, local_ver)
+                            new_cfg = await self.registration_client.get_configuration()
+                            await self.reg_repo.save_registration(new_cfg, actor="supervisor_sync")
+                            await self.registration_client.acknowledge_config(remote_cfg_ver)
+                except Exception as exc:
+                    logger.debug("Middleware heartbeat notice: %s", exc)
 
     async def check_hardware_auto_enrollment(self) -> None:
         """
