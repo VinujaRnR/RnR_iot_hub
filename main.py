@@ -53,7 +53,10 @@ from storage import DatabaseManager, ScheduleRepository, EventOutbox, Registrati
 from core.registration_client import RegistrationClient
 from core.registration_guard import RegistrationGuard, HubOperatingState
 from core.config_sync_manager import ConfigSyncManager
+from core.auto_config_manager import AutoConfigManager
+from core.registration_listener import RegistrationListener
 from core.middleware_provisioning import MiddlewareProvisioningListener
+from core.provisioning_reporter import ProvisioningReporter
 from devices.device_registry import DeviceRegistry
 from devices.auto_enrollment import AutoEnrollmentManager
 from supervisor.supervisor import HubSupervisor
@@ -123,6 +126,7 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
     db = None
     device_manager = None
     publisher = None
+    provisioning_reporter = None
     schedule_engine = None
     scheduler = None
     supervisor = None
@@ -136,8 +140,8 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
 
     try:
         # 2. Initialize SQLite Storage
-        logger.info("[INIT] Initializing SQLite database at '%s'...", DATABASE_PATH)
-        db = DatabaseManager(db_path=DATABASE_PATH)
+        logger.info("[INIT] Initializing SQLite database at '%s'...", settings.DATABASE_PATH)
+        db = DatabaseManager(db_path=settings.DATABASE_PATH)
         await db.connect()
         schedule_repo = ScheduleRepository(db)
         event_outbox = EventOutbox(db)
@@ -281,6 +285,16 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
             logger.warning("[INIT] Initial RabbitMQ Publisher connection deferred: %s", exc)
         await publisher.start_outbox_worker(interval=2.0)
 
+        # 5b. Initialize Provisioning Reporter (RNHub V2 Outbox)
+        provisioning_reporter = ProvisioningReporter(
+            db=db,
+            publisher=publisher,
+            hub_uuid=settings.HUB_UUID or (reg_snapshot.get("hub_uuid") if reg_snapshot else None),
+            hub_id=settings.HUB_ID,
+        )
+        await provisioning_reporter.start_outbox_worker(interval=5.0)
+        config_sync.provisioning_reporter = provisioning_reporter
+
         if stop_event.is_set():
             return
 
@@ -349,14 +363,16 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
         )
         supervisor.consumer = consumer
 
-        # 8b. Initialize Middleware Provisioning Listener (RNHub V2)
-        logger.info("[INIT] Starting Middleware Provisioning Listener...")
-        provisioning_listener = MiddlewareProvisioningListener(
+        # 8b. Initialize Registration Listener (RNHub V2)
+        logger.info("[INIT] Starting Registration Listener...")
+        registration_listener = RegistrationListener(
             url=settings.RABBITMQ_URL,
             hub_id=settings.HUB_ID,
             hub_uuid=settings.HUB_UUID or (reg_snapshot.get("hub_uuid") if reg_snapshot else None),
-            config_sync_manager=config_sync,
+            auto_config_manager=config_sync,
+            provisioning_reporter=provisioning_reporter,
         )
+        provisioning_listener = registration_listener
 
         # 9. Verify Local Management API Ready
         logger.info("[INIT] Local Management API operational on http://%s:%d", settings.API_HOST, settings.API_PORT)
@@ -472,6 +488,11 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
         if supervisor:
             try:
                 await supervisor.stop()
+            except Exception:
+                pass
+        if provisioning_reporter:
+            try:
+                await provisioning_reporter.stop_outbox_worker()
             except Exception:
                 pass
         if publisher:

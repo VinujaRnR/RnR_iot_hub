@@ -39,10 +39,37 @@ class AutoEnrollmentReport:
     pending: List[Dict[str, Any]] = field(default_factory=list)
     rejected: List[Dict[str, Any]] = field(default_factory=list)
     port_changes: List[Dict[str, Any]] = field(default_factory=list)
+    device_results: List[Dict[str, Any]] = field(default_factory=list)
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if not d.get("device_results"):
+            d["device_results"] = self.to_middleware_device_results()
+        return d
+
+    def to_middleware_device_results(self) -> List[Dict[str, Any]]:
+        results = []
+        for b in self.bound:
+            results.append({
+                "device_uid": b.get("registration_device_id") or b.get("device_uid") or b.get("mac"),
+                "status": "configured",
+                "port": b.get("port"),
+                "mac": b.get("mac"),
+            })
+        for p in self.pending:
+            results.append({
+                "device_uid": p.get("registration_device_id") or p.get("device_uid") or p.get("name"),
+                "status": "pending_hardware_binding",
+                "reason": p.get("reason"),
+            })
+        for r in self.rejected:
+            results.append({
+                "device_uid": r.get("registration_device_id") or r.get("mac") or "unknown",
+                "status": "unapproved",
+                "reason": r.get("reason"),
+            })
+        return results
 
 
 class AutoEnrollmentManager:
@@ -179,9 +206,28 @@ class AutoEnrollmentManager:
 
         # 1. Retrieve authorized device inventory from Django middleware snapshot
         authorized_inventory = await self.reg_repo.get_authorized_devices()
+        try:
+            conn = self.db.connection
+            async with conn.execute("SELECT device_uid, name, mac, profile, approved, status FROM approved_devices") as cur:
+                appr_rows = await cur.fetchall()
+            existing_ids = {str(d.get("registration_device_id") or d.get("device_uid")) for d in authorized_inventory}
+            for ar in appr_rows:
+                duid = ar["device_uid"]
+                if duid not in existing_ids:
+                    authorized_inventory.append({
+                        "registration_device_id": duid,
+                        "device_uid": duid,
+                        "name": ar["name"],
+                        "device_mac": ar["mac"],
+                        "profile": ar["profile"],
+                        "status": "approved" if ar["approved"] else "revoked",
+                    })
+        except Exception:
+            pass
+
         auth_by_mac: Dict[str, Dict[str, Any]] = {}
         for dev in authorized_inventory:
-            mac = self.normalize_mac(dev.get("device_mac"))
+            mac = self.normalize_mac(dev.get("device_mac") or dev.get("mac"))
             if mac:
                 auth_by_mac[mac] = dev
 
@@ -268,6 +314,15 @@ class AutoEnrollmentManager:
                     status="bound",
                     bound_port=port,
                 )
+                try:
+                    conn = self.db.connection
+                    await conn.execute(
+                        "UPDATE approved_devices SET status = 'bound', bound_port = ?, updated_at = ? WHERE device_uid = ? OR mac = ?",
+                        (port, datetime.now(timezone.utc).isoformat(), reg_id, mac),
+                    )
+                    await conn.commit()
+                except Exception:
+                    pass
 
                 # Register device with DeviceManager in SAFE startup state (outputs OFF)
                 if self.device_manager:
@@ -312,6 +367,7 @@ class AutoEnrollmentManager:
                         "reason": "AWAITING_MATCHING_HARDWARE_OR_MAC",
                     })
 
+        report.device_results = report.to_middleware_device_results()
         return report.to_dict()
 
     def _register_driver_safe(

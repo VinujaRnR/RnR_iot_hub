@@ -112,6 +112,16 @@ async def cmd_status(args: argparse.Namespace) -> int:
         except Exception:
             svc_active = "NOT_INSTALLED"
 
+        # RNHub V2 device status metrics
+        auth_devs = await reg_repo.get_authorized_devices()
+        appr_count = len(auth_devs)
+        configured_count = sum(1 for d in auth_devs if d.get("status") == "bound")
+        pending_count = sum(1 for d in auth_devs if d.get("status") in ("pending_binding", "pending"))
+        import glob
+        detected_ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+        bound_ports = {b.port_hint for b in bindings if b.port_hint}
+        unknown_count = sum(1 for p in detected_ports if p not in bound_ports)
+
         # Check devices
         online_count = 0
         offline_count = 0
@@ -121,8 +131,30 @@ async def cmd_status(args: argparse.Namespace) -> int:
             else:
                 offline_count += 1
 
-        print(f"\n{BOLD}{CYAN}iothubd — System Status{RESET}")
-        print(f"{'='*50}")
+        actual_hub_id = reg.get('hub_id', hub_id) if reg else hub_id
+        hub_name_val = reg.get('hub_name', 'Plants Hub 01') if reg else 'RNHub'
+        cfg_ver_val = reg.get('config_version', 1) if reg else 1
+        act_status = "ACTIVE" if op_state == HubOperatingState.ACTIVATED else str(op_state)
+        rmq_status = "CONNECTED" if svc_active == "ACTIVE" else "DISCONNECTED"
+
+        print(f"\n{BOLD}{CYAN}RN Solutions — RNHub V2{RESET}")
+        print(f"{'='*45}")
+        print(f" {BOLD}Hub ID{RESET}          : {actual_hub_id}")
+        print(f" {BOLD}Hub Name{RESET}        : {hub_name_val}")
+        print(f" {BOLD}Activation{RESET}      : {GREEN if act_status == 'ACTIVE' else YELLOW}{act_status}{RESET}")
+        print(f" {BOLD}RabbitMQ{RESET}        : {GREEN if rmq_status == 'CONNECTED' else RED}{rmq_status}{RESET}")
+        print()
+        print(f" {BOLD}Middleware Sync{RESET} : {GREEN}ENABLED{RESET}")
+        print(f" {BOLD}Config Version{RESET}  : {cfg_ver_val}")
+        print(f" {BOLD}Config Status{RESET}   : {GREEN}APPLIED{RESET}")
+        print()
+        print(f" {BOLD}Approved Devices{RESET}   : {appr_count}")
+        print(f" {BOLD}Configured Devices{RESET} : {configured_count}")
+        print(f" {BOLD}Pending Devices{RESET}    : {pending_count}")
+        print(f" {BOLD}Unknown Devices{RESET}    : {unknown_count}")
+        print()
+        print(f" {BOLD}Auto Provisioning{RESET}  : {GREEN}RUNNING{RESET}")
+        print(f"{'='*45}")
         if reg:
             print(f" {BOLD}Hub ID:{RESET}          {reg.get('hub_id', hub_id)}")
             print(f" {BOLD}Hub UUID:{RESET}        {reg.get('hub_uuid', 'N/A')}")

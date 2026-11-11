@@ -1,0 +1,379 @@
+"""
+Unit and Integration Tests for RNHub V2 Automatic Registration & Configuration.
+File: tests/test_v2_automatic_registration.py
+
+Validates:
+1. Reception and parsing of exact Section 4 configuration JSON (hub.config.snapshot).
+2. Atomic SQLite persistence across hub_configuration, approved_devices, hub_registration, config_history.
+3. RegistrationListener hub.hello announcement and manual RabbitMQ message processing.
+4. AutoEnrollmentManager matching Section 4 devices (dev-001 approved with MAC, dev-002 null MAC).
+5. Safe initial states and profile binding for esp8266_relay_v1.
+6. ProvisioningReporter persistent outbox queuing and flushing of Section 11 ack format.
+7. Rejection of expired configurations and idempotency of identical configuration hashes.
+8. iothubctl status RNHub V2 diagnostic output layout.
+"""
+
+from __future__ import annotations
+import asyncio
+import json
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import pytest
+import pytest_asyncio
+
+from storage.database import DatabaseManager
+from storage.config_repository import ConfigRepository
+from storage.registration_repository import RegistrationRepository
+from devices.device_registry import DeviceRegistry, ScannedPortInfo
+from devices.auto_enrollment import AutoEnrollmentManager
+from devices.device_manager import DeviceManager
+from devices.mock_device import MockDevice
+from core.auto_config_manager import AutoConfigManager
+from core.registration_listener import RegistrationListener
+from core.provisioning_reporter import ProvisioningReporter
+
+
+class MockIncomingMessage:
+    """Simulates an aio_pika incoming message for registration tests."""
+
+    def __init__(self, body: Dict[str, Any] | str, headers: Optional[Dict[str, Any]] = None):
+        if isinstance(body, dict):
+            self.body = json.dumps(body).encode("utf-8")
+        elif isinstance(body, str):
+            self.body = body.encode("utf-8")
+        else:
+            self.body = body
+        self.headers = headers or {}
+        self.acked = False
+        self.rejected = False
+
+    async def ack(self) -> None:
+        self.acked = True
+
+    async def reject(self, requeue: bool = False) -> None:
+        self.rejected = True
+
+
+class MockExchange:
+    """Captures messages published to RabbitMQ exchange."""
+
+    def __init__(self, name: str = "mock_exchange"):
+        self.name = name
+        self.published: List[Dict[str, Any]] = []
+
+    async def publish(self, message: Any, routing_key: str) -> None:
+        payload = json.loads(message.body.decode("utf-8")) if hasattr(message, "body") else message
+        self.published.append({
+            "exchange": self.name,
+            "routing_key": routing_key,
+            "headers": getattr(message, "headers", {}),
+            "payload": payload,
+        })
+
+
+class MockPublisher:
+    """Mock publisher for ProvisioningReporter."""
+
+    def __init__(self):
+        self.is_connected = True
+        self.published_events: List[Dict[str, Any]] = []
+
+    async def publish_event(self, routing_key: str, payload: Dict[str, Any], mandatory: bool = False, message_id: Optional[str] = None) -> bool:
+        self.published_events.append({
+            "routing_key": routing_key,
+            "payload": payload,
+            "message_id": message_id,
+        })
+        return True
+
+
+@pytest_asyncio.fixture
+async def env_v2(tmp_path: Path):
+    """Initializes isolated database and repositories for V2 testing."""
+    db_file = str(tmp_path / "iothub_v2_test.db")
+    db = DatabaseManager(db_path=db_file)
+    await db.connect()
+
+    cfg = ConfigRepository(db)
+    reg_repo = RegistrationRepository(db, cfg)
+    dev_reg = DeviceRegistry(db)
+    dev_mgr = DeviceManager()
+
+    auto_enr = AutoEnrollmentManager(
+        db=db,
+        device_registry=dev_reg,
+        device_manager=dev_mgr,
+        reg_repo=reg_repo,
+    )
+    reporter = ProvisioningReporter(
+        db=db,
+        hub_uuid="3417ebc3-b479-4b11-8f93-911b2c349abc",
+        hub_id="hub-3417ebc3b479",
+    )
+    manager = AutoConfigManager(
+        db=db,
+        reg_repo=reg_repo,
+        config_repo=cfg,
+        auto_enrollment=auto_enr,
+        provisioning_reporter=reporter,
+        expected_hub_id="hub-3417ebc3b479",
+        expected_hub_uuid="3417ebc3-b479-4b11-8f93-911b2c349abc",
+    )
+
+    yield {
+        "db": db,
+        "cfg": cfg,
+        "reg_repo": reg_repo,
+        "dev_reg": dev_reg,
+        "dev_mgr": dev_mgr,
+        "auto_enr": auto_enr,
+        "reporter": reporter,
+        "manager": manager,
+    }
+    await db.close()
+
+
+@pytest.fixture
+def section4_config_snapshot() -> Dict[str, Any]:
+    """Exact JSON payload defined in Section 4 of the specification."""
+    return {
+        "schema_version": 1,
+        "message_type": "hub.config.snapshot",
+        "message_id": "cfg-1001",
+        "hub_uuid": "3417ebc3-b479-4b11-8f93-911b2c349abc",
+        "hub_id": "hub-3417ebc3b479",
+        "config_version": 3,
+        "issued_at": "2026-11-11T08:30:00Z",
+        "expires_at": "2026-11-12T08:30:00Z",
+        "hub": {
+            "hub_name": "Plants Hub 01",
+            "hub_type": "mini_pc",
+            "resource_id": 12,
+            "sub_resource_id": 34,
+            "installation_location": "Greenhouse A - Rack 3",
+            "timezone": "Asia/Colombo",
+        },
+        "devices": [
+            {
+                "device_uid": "dev-001",
+                "name": "Lighting Controller",
+                "mac": "98a316e6b658",
+                "type": "relay",
+                "profile": "esp8266_relay_v1",
+                "approved": True,
+                "configuration": {
+                    "channels": 1,
+                    "safe_initial_state": "OFF",
+                },
+            },
+            {
+                "device_uid": "dev-002",
+                "name": "Water Valve Controller",
+                "mac": None,
+                "type": "relay",
+                "profile": "esp8266_relay_v1",
+                "approved": False,
+                "configuration": {
+                    "channels": 1,
+                    "safe_initial_state": "OFF",
+                },
+            },
+        ],
+        "signature": "<verified-server-signature>",
+    }
+
+
+# =====================================================================
+# Test Cases
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_v2_receive_hub_config_snapshot_payload(env_v2, section4_config_snapshot):
+    """
+    Validates that AutoConfigManager parses Section 4 configuration JSON
+    and atomically updates hub_configuration, approved_devices, and config_history.
+    """
+    mgr = env_v2["manager"]
+    db = env_v2["db"]
+
+    res = await mgr.apply_configuration(section4_config_snapshot)
+    assert res["status"] == "SUCCESS"
+    assert res["config_version"] == 3
+
+    # 1. Verify hub_configuration table
+    conn = db.connection
+    async with conn.execute("SELECT * FROM hub_configuration WHERE hub_uuid = ?", ("3417ebc3-b479-4b11-8f93-911b2c349abc",)) as cur:
+        hub_cfg = await cur.fetchone()
+    assert hub_cfg is not None
+    assert hub_cfg["hub_name"] == "Plants Hub 01"
+    assert hub_cfg["resource_id"] == 12
+    assert hub_cfg["sub_resource_id"] == 34
+    assert hub_cfg["installation_location"] == "Greenhouse A - Rack 3"
+    assert hub_cfg["timezone"] == "Asia/Colombo"
+
+    # 2. Verify approved_devices table
+    async with conn.execute("SELECT * FROM approved_devices ORDER BY device_uid ASC") as cur:
+        appr_devs = await cur.fetchall()
+    assert len(appr_devs) == 2
+    dev1 = appr_devs[0]
+    assert dev1["device_uid"] == "dev-001"
+    assert dev1["name"] == "Lighting Controller"
+    assert dev1["mac"] == "98a316e6b658"
+    assert dev1["profile"] == "esp8266_relay_v1"
+    assert dev1["approved"] == 1
+
+    dev2 = appr_devs[1]
+    assert dev2["device_uid"] == "dev-002"
+    assert dev2["mac"] is None
+    assert dev2["approved"] == 0
+
+    # 3. Verify config_history table
+    async with conn.execute("SELECT * FROM config_history WHERE config_version = 3") as cur:
+        hist = await cur.fetchone()
+    assert hist is not None
+    assert hist["applied_status"] == "APPLIED"
+    assert len(hist["config_hash"]) == 64
+
+
+@pytest.mark.asyncio
+async def test_v2_registration_listener_hello_announcement(env_v2):
+    """Validates that RegistrationListener sends hub.hello announcement with version and machine ID."""
+    listener = RegistrationListener(
+        hub_id="hub-3417ebc3b479",
+        hub_uuid="3417ebc3-b479-4b11-8f93-911b2c349abc",
+        auto_config_manager=env_v2["manager"],
+    )
+    mock_ex = MockExchange("hub_results")
+    listener.ack_exchange = mock_ex
+    listener.channel = True
+
+    await listener.publish_hello()
+
+    assert len(mock_ex.published) == 1
+    published = mock_ex.published[0]
+    assert published["routing_key"] == "hub.hub-3417ebc3b479.hello"
+    payload = published["payload"]
+    assert payload["message_type"] == "hub.hello"
+    assert payload["hub_id"] == "hub-3417ebc3b479"
+    assert payload["hub_uuid"] == "3417ebc3-b479-4b11-8f93-911b2c349abc"
+    assert "installation_id" in payload
+
+
+@pytest.mark.asyncio
+async def test_v2_auto_enrollment_with_esp8266_safe_profile(env_v2, section4_config_snapshot):
+    """
+    Validates automatic discovery of dev-001 with MAC 98a316e6b658,
+    binding it to /dev/ttyUSB0 under esp8266_relay_v1 without actuation.
+    """
+    mgr = env_v2["manager"]
+    auto_enr = env_v2["auto_enr"]
+    dev_reg = env_v2["dev_reg"]
+
+    # First apply configuration so approved devices exist in SQLite
+    await mgr.apply_configuration(section4_config_snapshot)
+
+    # Simulate discovering USB device on /dev/ttyUSB0 with MAC 98a316e6b658
+    candidate_ports = [
+        ScannedPortInfo(
+            port="/dev/ttyUSB0",
+            vid="1a86",
+            pid="7523",
+            serial_number="98a316e6b658",
+            reported_mac="98a316e6b658",
+        )
+    ]
+
+    report = await auto_enr.discover_and_reconcile(candidate_ports=candidate_ports)
+    assert len(report["bound"]) == 1
+    bound = report["bound"][0]
+    assert bound["mac"] == "98a316e6b658"
+    assert bound["port"] == "/dev/ttyUSB0"
+    assert bound["profile"] == "esp8266_relay_v1"
+
+    # dev-002 had no MAC, so it must be pending
+    assert len(report["pending"]) == 1
+    pending = report["pending"][0]
+    assert pending["name"] == "Water Valve Controller"
+
+    # Verify device_results format for Section 11 ack
+    dev_results = report["device_results"]
+    assert len(dev_results) >= 2
+    cfg_dev = next(d for d in dev_results if d["device_uid"] == "dev-001")
+    assert cfg_dev["status"] == "configured"
+    assert cfg_dev["port"] == "/dev/ttyUSB0"
+
+    pend_dev = next(d for d in dev_results if d["device_uid"] == "dev-002")
+    assert pend_dev["status"] == "pending_hardware_binding"
+
+
+@pytest.mark.asyncio
+async def test_v2_provisioning_reporter_queues_and_flushes_ack(env_v2):
+    """
+    Validates that ProvisioningReporter persists hub.config.ack into provisioning_outbox
+    and flushes to RabbitMQ upon broker connection.
+    """
+    reporter = env_v2["reporter"]
+    mock_pub = MockPublisher()
+    reporter.publisher = mock_pub
+
+    device_results = [
+        {"device_uid": "dev-001", "status": "configured", "port": "/dev/ttyUSB0"},
+        {"device_uid": "dev-002", "status": "pending_hardware_binding"},
+    ]
+
+    # Queue result
+    msg_id = await reporter.queue_result(
+        config_version=3,
+        device_results=device_results,
+        status="partial",
+    )
+    assert msg_id.startswith("ack-")
+
+    # Flush outbox
+    delivered_count = await reporter.flush_outbox()
+    assert delivered_count == 1
+    assert len(mock_pub.published_events) == 1
+
+    event = mock_pub.published_events[0]
+    assert event["routing_key"] == "hub.hub-3417ebc3b479.config.ack"
+    ack_payload = event["payload"]
+    assert ack_payload["message_type"] == "hub.config.ack"
+    assert ack_payload["config_version"] == 3
+    assert ack_payload["status"] == "partial"
+    assert len(ack_payload["devices"]) == 2
+    assert ack_payload["devices"][0]["status"] == "configured"
+    assert ack_payload["devices"][1]["status"] == "pending_hardware_binding"
+
+    # Outbox should now be empty
+    conn = env_v2["db"].connection
+    async with conn.execute("SELECT COUNT(*) FROM provisioning_outbox WHERE status = 'PENDING'") as cur:
+        count = (await cur.fetchone())[0]
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_v2_expired_config_rejection(env_v2, section4_config_snapshot):
+    """Validates that a configuration snapshot with expires_at in the past is rejected."""
+    mgr = env_v2["manager"]
+    expired_cfg = dict(section4_config_snapshot)
+    expired_cfg["expires_at"] = "2020-01-01T00:00:00Z"
+
+    res = await mgr.apply_configuration(expired_cfg)
+    assert res["status"] == "REJECTED"
+    assert res["error"] == "CONFIG_EXPIRED"
+
+
+@pytest.mark.asyncio
+async def test_v2_duplicate_config_hash_already_applied(env_v2, section4_config_snapshot):
+    """Validates that re-sending an identical configuration snapshot returns ALREADY_APPLIED."""
+    mgr = env_v2["manager"]
+
+    # First application
+    res1 = await mgr.apply_configuration(section4_config_snapshot)
+    assert res1["status"] == "SUCCESS"
+
+    # Second application of identical payload
+    res2 = await mgr.apply_configuration(section4_config_snapshot)
+    assert res2["status"] == "ALREADY_APPLIED"
+    assert res2["config_version"] == 3

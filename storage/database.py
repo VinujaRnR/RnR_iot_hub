@@ -42,9 +42,11 @@ class DatabaseManager:
         if db_dir:
             try:
                 os.makedirs(db_dir, exist_ok=True)
-            except OSError as err:
+                if not os.access(db_dir, os.W_OK):
+                    raise PermissionError(f"Directory '{db_dir}' is not writable")
+            except (OSError, PermissionError) as err:
                 logger.warning(
-                    "Could not create database directory '%s': %s. Falling back to local 'iothub.db'",
+                    "Could not create or write to database directory '%s': %s. Falling back to local 'iothub.db'",
                     db_dir,
                     err,
                 )
@@ -393,6 +395,77 @@ class DatabaseManager:
             """
         )
         await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_dev_mac ON authorized_devices(device_mac);")
+
+        # 15. Hub Configuration table (Authoritative settings snapshot: name, resource, location, timezone)
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hub_configuration (
+                hub_uuid TEXT PRIMARY KEY,
+                hub_id TEXT NOT NULL,
+                hub_name TEXT NOT NULL,
+                hub_type TEXT DEFAULT 'mini_pc',
+                resource_id INTEGER,
+                sub_resource_id INTEGER,
+                installation_location TEXT,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                config_version INTEGER DEFAULT 0,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+        # 16. Approved Devices table (Latest approved device definitions from Django)
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS approved_devices (
+                device_uid TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                mac TEXT,
+                type TEXT DEFAULT 'relay',
+                profile TEXT DEFAULT 'esp8266_relay_v1',
+                approved INTEGER NOT NULL DEFAULT 1,
+                configuration_json TEXT,
+                status TEXT NOT NULL DEFAULT 'pending_binding',
+                bound_port TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_appr_dev_mac ON approved_devices(mac);")
+
+        # 17. Config History table (Applied version, SHA256 hash, raw json, and timestamp)
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS config_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hub_uuid TEXT NOT NULL,
+                config_version INTEGER NOT NULL,
+                config_hash TEXT NOT NULL,
+                applied_status TEXT NOT NULL DEFAULT 'APPLIED',
+                raw_json TEXT,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+        await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_cfg_hist_ver ON config_history(hub_uuid, config_version);")
+
+        # 18. Provisioning Outbox table (Results and acks awaiting successful delivery to middleware)
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS provisioning_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id TEXT NOT NULL UNIQUE,
+                message_type TEXT NOT NULL DEFAULT 'hub.config.ack',
+                routing_key TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_prov_outbox_status ON provisioning_outbox(status);")
 
         # Migration: Add registration_device_id to device_bindings if not present
         try:

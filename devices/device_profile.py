@@ -106,17 +106,48 @@ DEFAULT_ARDUINO_NANO_PROFILE = DeviceProfile(
     },
 )
 
+# ESP8266 Relay Controller Profile (RNHub V2)
+DEFAULT_ESP8266_RELAY_PROFILE = DeviceProfile(
+    profile_id="esp8266_relay_v1",
+    name="ESP8266 Relay Controller (Lighting / Valve Relay)",
+    transport_type="usb_serial",
+    baud_rate=115200,
+    channels={
+        "relay:light": {
+            "actions": ["LIGHTS_ON", "LIGHTS_OFF", "STATUS", "HELLO", "HANDSHAKE"],
+        },
+        "relay:water_valve": {
+            "actions": ["WATER_VALVE_ON", "WATER_VALVE_OFF", "STATUS", "HELLO", "HANDSHAKE"],
+            "max_on_seconds": 90,
+            "failure_policy": "require_safe_state",
+        },
+    },
+    protocol={
+        "encoding": "utf-8",
+        "framing": "newline_json",
+        "require_acknowledgment": True,
+        "command_id_required": False,
+    },
+)
+
+
+BUILTIN_PROFILES: Dict[str, DeviceProfile] = {
+    DEFAULT_PLANT_CONTROLLER_PROFILE.profile_id: DEFAULT_PLANT_CONTROLLER_PROFILE,
+    DEFAULT_ARDUINO_NANO_PROFILE.profile_id: DEFAULT_ARDUINO_NANO_PROFILE,
+    DEFAULT_ESP8266_RELAY_PROFILE.profile_id: DEFAULT_ESP8266_RELAY_PROFILE,
+}
+
 
 class DeviceProfileRegistry:
     """Manages storage, retrieval, and validation of device profiles in SQLite."""
 
     def __init__(self, db: DatabaseManager):
         self.db = db
-        self._cache: Dict[str, DeviceProfile] = {}
+        self._cache: Dict[str, DeviceProfile] = dict(BUILTIN_PROFILES)
 
     async def initialize_defaults(self) -> None:
         """Seeds standard built-in profiles into SQLite if not already stored."""
-        for profile in (DEFAULT_PLANT_CONTROLLER_PROFILE, DEFAULT_ARDUINO_NANO_PROFILE):
+        for profile in (DEFAULT_PLANT_CONTROLLER_PROFILE, DEFAULT_ARDUINO_NANO_PROFILE, DEFAULT_ESP8266_RELAY_PROFILE):
             existing = await self.get_profile(profile.profile_id)
             if existing is None:
                 await self.save_profile(profile)
@@ -153,12 +184,17 @@ class DeviceProfileRegistry:
             (profile_id,),
         ) as cur:
             row = await cur.fetchone()
-            if not row:
-                return None
-            data = json.loads(row["profile_json"])
-            prof = DeviceProfile.from_dict(data)
-            self._cache[profile_id] = prof
-            return prof
+            if row:
+                data = json.loads(row["profile_json"])
+                prof = DeviceProfile.from_dict(data)
+                self._cache[profile_id] = prof
+                return prof
+
+        builtin = BUILTIN_PROFILES.get(profile_id)
+        if builtin:
+            self._cache[profile_id] = builtin
+            return builtin
+        return None
 
     async def list_profiles(self) -> List[DeviceProfile]:
         """Lists all registered profiles."""
