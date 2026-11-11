@@ -50,7 +50,6 @@ from scheduler.action_dispatcher import ActionDispatcher
 from scheduler.schedule_engine import ScheduleEngine
 from scheduler.state_reconciler import StateReconciler
 from storage import DatabaseManager, ScheduleRepository, EventOutbox, RegistrationRepository, ConfigRepository
-from core.registration_client import RegistrationClient
 from core.registration_guard import RegistrationGuard, HubOperatingState
 from core.config_sync_manager import ConfigSyncManager
 from core.auto_config_manager import AutoConfigManager
@@ -332,17 +331,6 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
 
         # 7. Initialize HubSupervisor (Recovery rules, device quarantining, clock & watchdog)
         logger.info("[INIT] Starting HubSupervisor monitoring daemon...")
-        reg_client = None
-        if reg_snapshot and reg_snapshot.get("hub_uuid"):
-            api_tok = await reg_repo.config_repo.get_setting("auth.token") or reg_snapshot.get("api_token")
-            reg_client = RegistrationClient(
-                middleware_url=reg_snapshot.get("middleware_url") or settings.MIDDLEWARE_URL,
-                hub_uuid=reg_snapshot.get("hub_uuid"),
-                api_token=api_tok,
-                verify_ssl=settings.MIDDLEWARE_VERIFY_SSL,
-                timeout=settings.MIDDLEWARE_TIMEOUT_SECONDS,
-            )
-
         supervisor = HubSupervisor(
             check_interval=15.0,
             db=db,
@@ -351,7 +339,7 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
             schedule_engine=schedule_engine,
             outbox=event_outbox,
             publisher=publisher,
-            registration_client=reg_client,
+            registration_client=None,
             registration_guard=guard,
             reg_repo=reg_repo,
             auto_enrollment=auto_enrollment,

@@ -265,7 +265,6 @@ class AutoConfigManager:
                     "config_version": incoming_version,
                     "lease_expires_at": expires_at_str,
                     "verified_at": now_iso,
-                    "middleware_url": payload.get("middleware_url") or "",
                     "connected_devices": devices_list,
                 },
                 raw_config=payload,

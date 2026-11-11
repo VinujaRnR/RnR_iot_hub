@@ -152,8 +152,6 @@ class RegistrationRepository:
             await self.config_repo.set_setting("registration.sub_resource_id", sub_resource_id, is_secret=False, actor=actor)
         if lease_expires_at:
             await self.config_repo.set_setting("registration.lease_expires_at", lease_expires_at, is_secret=False, actor=actor)
-        if middleware_url:
-            await self.config_repo.set_setting("registration.middleware_url", middleware_url, is_secret=False, actor=actor)
 
         # 3. Securely store machine credentials (api_token & broker password)
         if api_token:

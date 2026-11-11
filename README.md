@@ -283,7 +283,6 @@ Sub-Resource ID       : 34
 Location              : Greenhouse A - Rack 3
 Timezone              : Asia/Colombo
 Config Version        : 4
-Middleware URL        : https://api.example.com
 Lease Expiration      : 2026-11-18 12:00:00 UTC (Valid)
 Verified At           : 2026-11-11 11:30:00 UTC
 Approved Devices      : 2 registered

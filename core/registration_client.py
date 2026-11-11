@@ -100,7 +100,7 @@ class RegistrationClient:
 
     def __init__(
         self,
-        middleware_url: str = "https://api.example.com",
+        middleware_url: str = "",
         hub_uuid: Optional[str] = None,
         api_token: Optional[str] = None,
         verify_ssl: bool = True,

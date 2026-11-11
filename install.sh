@@ -66,7 +66,6 @@ UNINSTALL=false
 PURGE=false
 ASSUME_YES=false
 ACTIVATION_CODE=""
-MIDDLEWARE_URL=""
 OFFLINE=false
 MIGRATE_IDENTITY=false
 
@@ -82,10 +81,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --activation-code)
             ACTIVATION_CODE="$2"
-            shift 2
-            ;;
-        --middleware-url)
-            MIDDLEWARE_URL="$2"
             shift 2
             ;;
         --offline)
@@ -243,9 +238,6 @@ if [ "$WIZARD" = true ]; then
 fi
 if [ -n "$ACTIVATION_CODE" ]; then
     INSTALL_ARGS+=("--activation-code" "$ACTIVATION_CODE")
-fi
-if [ -n "$MIDDLEWARE_URL" ]; then
-    INSTALL_ARGS+=("--middleware-url" "$MIDDLEWARE_URL")
 fi
 if [ "$OFFLINE" = true ]; then
     INSTALL_ARGS+=("--offline")

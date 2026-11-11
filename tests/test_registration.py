@@ -121,7 +121,7 @@ async def test_registration_client_activate_success(sample_activation_response):
 
     transport = httpx.MockTransport(handler)
     client = RegistrationClient(
-        middleware_url="https://api.example.com",
+        middleware_url="http://mock-middleware.internal",
         transport=transport,
     )
     result = await client.activate(activation_code="ACT-123456")
@@ -138,7 +138,7 @@ async def test_registration_client_invalid_activation_code():
         return httpx.Response(400, json={"error": "Activation code is invalid or expired"})
 
     transport = httpx.MockTransport(handler)
-    client = RegistrationClient(middleware_url="https://api.example.com", transport=transport)
+    client = RegistrationClient(middleware_url="http://mock-middleware.internal", transport=transport)
     with pytest.raises(InvalidActivationCodeError, match="invalid or expired"):
         await client.activate(activation_code="BAD-CODE")
 
@@ -150,7 +150,7 @@ async def test_registration_client_duplicate_claim():
         return httpx.Response(409, json={"error": "Hub has already been claimed"})
 
     transport = httpx.MockTransport(handler)
-    client = RegistrationClient(middleware_url="https://api.example.com", transport=transport)
+    client = RegistrationClient(middleware_url="http://mock-middleware.internal", transport=transport)
     with pytest.raises(DuplicateClaimError, match="already been claimed"):
         await client.activate(activation_code="DUP-CODE")
 
@@ -175,7 +175,7 @@ async def test_registration_client_config_sync_and_ack(sample_activation_respons
 
     transport = httpx.MockTransport(handler)
     client = RegistrationClient(
-        middleware_url="https://api.example.com",
+        middleware_url="http://mock-middleware.internal",
         hub_uuid="uuid-123",
         api_token="tok_test",
         transport=transport,
@@ -199,7 +199,7 @@ async def test_registration_client_device_authorize():
 
     transport = httpx.MockTransport(handler)
     client = RegistrationClient(
-        middleware_url="https://api.example.com",
+        middleware_url="http://mock-middleware.internal",
         hub_uuid="uuid-123",
         api_token="tok_test",
         transport=transport,
@@ -429,7 +429,7 @@ async def test_iothubctl_hub_activate_rabbitmq(temp_db, sample_activation_respon
         }
 
     monkeypatch.setattr(RegistrationListener, "activate_via_rabbitmq", mock_activate)
-    args = argparse.Namespace(db=temp_db.db_path, hub_action="activate", activation_code="ACT-TEST-123", middleware_url=None)
+    args = argparse.Namespace(db=temp_db.db_path, hub_action="activate", activation_code="ACT-TEST-123")
     code = await cmd_hub(args)
     assert code == 0
 
@@ -452,7 +452,7 @@ async def test_iothubctl_hub_sync_rabbitmq(temp_db, sample_activation_response, 
         }
 
     monkeypatch.setattr(RegistrationListener, "sync_via_rabbitmq", mock_sync)
-    args = argparse.Namespace(db=temp_db.db_path, hub_action="sync", middleware_url=None)
+    args = argparse.Namespace(db=temp_db.db_path, hub_action="sync")
     code = await cmd_hub(args)
     assert code == 0
 
