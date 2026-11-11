@@ -1609,90 +1609,176 @@ async def cmd_hub(args: argparse.Namespace) -> int:
                 print(f"{RED}Error: Activation code is required.{RESET}")
                 return 1
 
-            mid_url = getattr(args, "middleware_url", None) or await cfg.get_setting("middleware.url", MIDDLEWARE_URL)
-            print(f"\n{BOLD}{CYAN}RN Solutions — RNHub Setup{RESET}")
-            print(f"Middleware URL: {mid_url}")
-            print(f"\n{BOLD}Connecting to RN Solutions middleware...{RESET}")
+            mid_url = getattr(args, "middleware_url", None)
+            # Only use HTTP if --middleware-url is explicitly passed and is not the placeholder
+            if mid_url and "api.example.com" not in mid_url:
+                print(f"\n{BOLD}{CYAN}RN Solutions — RNHub Setup (HTTP){RESET}")
+                print(f"Middleware URL: {mid_url}")
+                print(f"\n{BOLD}Connecting to RN Solutions middleware...{RESET}")
 
-            client = RegistrationClient(middleware_url=mid_url, verify_ssl=False)
-            try:
-                data = await client.activate(activation_code=act_code)
-            except Exception as exc:
-                print(f" {RED}[✗]{RESET} Activation failed: {exc}\n")
+                client = RegistrationClient(middleware_url=mid_url, verify_ssl=False)
+                try:
+                    data = await client.activate(activation_code=act_code)
+                except Exception as exc:
+                    print(f" {RED}[✗]{RESET} Activation failed: {exc}\n")
+                    return 1
+
+                print(f" {GREEN}[PASS]{RESET} Activation credential validated")
+                print(f" {GREEN}[PASS]{RESET} Registered hub found")
+                print(f" {GREEN}[PASS]{RESET} Hub identity verified\n")
+
+                hub_name = data.get("hub_name", "RNHub")
+                hub_id = data.get("hub_id", "hub-01")
+                res_id = data.get("resource_id", "N/A")
+                loc = data.get("installation_location", "Main Site")
+                tz = data.get("timezone", "Asia/Colombo")
+
+                print(f"{BOLD}Hub Name    : {hub_name}{RESET}")
+                print(f"{BOLD}Hub ID      : {hub_id}{RESET}")
+                print(f"{BOLD}Resource    : {res_id}{RESET}")
+                print(f"{BOLD}Location    : {loc}{RESET}")
+                print(f"{BOLD}Timezone    : {tz}{RESET}\n")
+
+                data["middleware_url"] = mid_url
+                await reg_repo.save_registration(data, actor="cli_activate")
+                print(f" {GREEN}[PASS]{RESET} Configuration saved securely")
+                print(f" {GREEN}[PASS]{RESET} Registration activated\n")
+                print(f"{GREEN}Hub installation completed.{RESET}\n")
+                return 0
+
+            # Default: RabbitMQ-based activation
+            print(f"\n{BOLD}{CYAN}RN Solutions — RNHub Activation{RESET}")
+            from config import RABBITMQ_HOST, RABBITMQ_AMQP_PORT, RABBITMQ_URL
+            print(f"Connecting to middleware via RabbitMQ ({RABBITMQ_HOST}:{RABBITMQ_AMQP_PORT})...")
+
+            from core.registration_listener import RegistrationListener
+            hub_id = await cfg.get_setting("hub.id", HUB_ID)
+            hub_uuid = await cfg.get_setting("hub.uuid", HUB_UUID)
+
+            result = await RegistrationListener.activate_via_rabbitmq(
+                activation_code=act_code,
+                db=db,
+                url=RABBITMQ_URL,
+                hub_id=hub_id,
+                hub_uuid=hub_uuid,
+                timeout=10.0,
+            )
+
+            st = result.get("status")
+            if st == "ACTIVATED":
+                reg_data = result.get("registration", {})
+                hub_meta = reg_data.get("hub", {})
+                hub_name = reg_data.get("hub_name") or hub_meta.get("hub_name", "RNHub")
+                res_hub_id = reg_data.get("hub_id") or hub_meta.get("hub_id", hub_id)
+                res_id = reg_data.get("resource_id") or hub_meta.get("resource_id", "-")
+                loc = reg_data.get("installation_location") or hub_meta.get("installation_location", "-")
+                tz = reg_data.get("timezone") or hub_meta.get("timezone", "Asia/Colombo")
+
+                print(f" {GREEN}[PASS]{RESET} Activation credential validated via RabbitMQ")
+                print(f" {GREEN}[PASS]{RESET} Registered hub found")
+                print(f" {GREEN}[PASS]{RESET} Hub identity verified\n")
+
+                print(f"{BOLD}Hub Name    : {hub_name}{RESET}")
+                print(f"{BOLD}Hub ID      : {res_hub_id}{RESET}")
+                print(f"{BOLD}Resource    : {res_id}{RESET}")
+                print(f"{BOLD}Location    : {loc}{RESET}")
+                print(f"{BOLD}Timezone    : {tz}{RESET}\n")
+
+                print(f" {GREEN}[PASS]{RESET} Configuration saved securely to SQLite")
+                print(f" {GREEN}[PASS]{RESET} Registration activated\n")
+                print(f"{GREEN}Hub installation completed.{RESET}\n")
+                return 0
+            elif st == "PENDING_ASYNC":
+                print(f" {GREEN}[✓]{RESET} Activation request sent to middleware via RabbitMQ.")
+                print(f" {GREEN}[✓]{RESET} Activation code saved locally in SQLite.")
+                print(f"     {DIM}The daemon (iothubd) will automatically finalize registration when middleware delivers the configuration.{RESET}\n")
+                return 0
+            else:
+                err = result.get("error") or result.get("detail", "Activation failed")
+                print(f" {RED}[✗]{RESET} Activation failed: {err}\n")
                 return 1
-
-            print(f" {GREEN}[PASS]{RESET} Activation credential validated")
-            print(f" {GREEN}[PASS]{RESET} Registered hub found")
-            print(f" {GREEN}[PASS]{RESET} Hub identity verified\n")
-
-            hub_name = data.get("hub_name", "RNHub")
-            hub_id = data.get("hub_id", "hub-01")
-            res_id = data.get("resource_id", "N/A")
-            loc = data.get("installation_location", "Main Site")
-            tz = data.get("timezone", "Asia/Colombo")
-
-            print(f"{BOLD}Hub Name    : {hub_name}{RESET}")
-            print(f"{BOLD}Hub ID      : {hub_id}{RESET}")
-            print(f"{BOLD}Resource    : {res_id}{RESET}")
-            print(f"{BOLD}Location    : {loc}{RESET}")
-            print(f"{BOLD}Timezone    : {tz}{RESET}\n")
-
-            data["middleware_url"] = mid_url
-            await reg_repo.save_registration(data, actor="cli_activate")
-            print(f" {GREEN}[PASS]{RESET} Configuration saved securely")
-            print(f" {GREEN}[PASS]{RESET} Registration activated\n")
-            print(f"{GREEN}Hub installation completed.{RESET}\n")
-            return 0
 
         elif sub == "sync":
             reg = await reg_repo.get_registration()
-            if not reg or not reg.get("hub_uuid"):
-                print(f"{RED}Error: Hub is not activated. Run 'sudo iothubctl hub activate' first.{RESET}")
-                return 1
+            hub_id = await cfg.get_setting("hub.id", HUB_ID)
+            hub_uuid = (reg.get("hub_uuid") if reg else None) or await cfg.get_setting("hub.uuid", HUB_UUID)
 
-            mid_url = getattr(args, "middleware_url", None) or reg.get("middleware_url") or MIDDLEWARE_URL
-            api_token = await cfg.get_setting("auth.token") or reg.get("api_token")
+            mid_url = getattr(args, "middleware_url", None)
+            if mid_url and "api.example.com" not in mid_url:
+                if not reg or not reg.get("hub_uuid"):
+                    print(f"{RED}Error: Hub is not activated. Run 'sudo iothubctl hub activate' first.{RESET}")
+                    return 1
 
-            print(f"\n{BOLD}{CYAN}Synchronizing configuration from Django middleware ({mid_url})...{RESET}")
-            client = RegistrationClient(
-                middleware_url=mid_url,
-                hub_uuid=reg["hub_uuid"],
-                api_token=api_token,
-                verify_ssl=False,
-            )
-            try:
-                config_data = await client.get_configuration()
-            except Exception as exc:
-                print(f" {RED}[✗]{RESET} Sync failed: {exc}\n")
-                return 1
+                api_token = await cfg.get_setting("auth.token") or reg.get("api_token")
+                print(f"\n{BOLD}{CYAN}Synchronizing configuration from Django middleware ({mid_url})...{RESET}")
+                client = RegistrationClient(
+                    middleware_url=mid_url,
+                    hub_uuid=reg["hub_uuid"],
+                    api_token=api_token,
+                    verify_ssl=False,
+                )
+                try:
+                    config_data = await client.get_configuration()
+                except Exception as exc:
+                    print(f" {RED}[✗]{RESET} Sync failed: {exc}\n")
+                    return 1
 
-            from core.config_sync_manager import ConfigSyncManager
-            from devices.auto_enrollment import AutoEnrollmentManager
-            from devices.device_registry import DeviceRegistry
+                from core.config_sync_manager import ConfigSyncManager
+                from devices.auto_enrollment import AutoEnrollmentManager
+                from devices.device_registry import DeviceRegistry
 
-            dev_reg = DeviceRegistry(db)
-            auto_enr = AutoEnrollmentManager(db, dev_reg, reg_repo=reg_repo)
-            sync_mgr = ConfigSyncManager(
+                dev_reg = DeviceRegistry(db)
+                auto_enr = AutoEnrollmentManager(db, dev_reg, reg_repo=reg_repo)
+                sync_mgr = ConfigSyncManager(
+                    db=db,
+                    reg_repo=reg_repo,
+                    config_repo=cfg,
+                    auto_enrollment=auto_enr,
+                    expected_hub_id=reg.get("hub_id"),
+                    expected_hub_uuid=reg.get("hub_uuid"),
+                )
+                config_data["middleware_url"] = mid_url
+                sync_result = await sync_mgr.apply_configuration(config_data, actor="cli_sync")
+                cfg_ver = config_data.get("config_version", 1)
+                await client.acknowledge_config(config_version=cfg_ver)
+
+                print(f" {GREEN}[✓]{RESET} Configuration synchronized (version {cfg_ver}).")
+                print(f"     Hub ID:   {config_data.get('hub_id', reg.get('hub_id'))}")
+                print(f"     Timezone: {config_data.get('timezone', reg.get('timezone'))}")
+                devs = config_data.get("connected_devices") or []
+                print(f"     Devices:  {len(devs)} authorized device(s) registered.")
+                bound_devs = sync_result.get("reconciled_devices", [])
+                print(f"     Hardware: {len(bound_devs)} USB device(s) automatically bound.\n")
+                return 0
+
+            # Default: RabbitMQ sync
+            print(f"\n{BOLD}{CYAN}Synchronizing configuration from Django middleware via RabbitMQ...{RESET}")
+            from config import RABBITMQ_URL
+            from core.registration_listener import RegistrationListener
+
+            result = await RegistrationListener.sync_via_rabbitmq(
                 db=db,
-                reg_repo=reg_repo,
-                config_repo=cfg,
-                auto_enrollment=auto_enr,
-                expected_hub_id=reg.get("hub_id"),
-                expected_hub_uuid=reg.get("hub_uuid"),
+                url=RABBITMQ_URL,
+                hub_id=hub_id,
+                hub_uuid=hub_uuid,
+                timeout=10.0,
             )
-            config_data["middleware_url"] = mid_url
-            sync_result = await sync_mgr.apply_configuration(config_data, actor="cli_sync")
-            cfg_ver = config_data.get("config_version", 1)
-            await client.acknowledge_config(config_version=cfg_ver)
 
-            print(f" {GREEN}[✓]{RESET} Configuration synchronized (version {cfg_ver}).")
-            print(f"     Hub ID:   {config_data.get('hub_id', reg.get('hub_id'))}")
-            print(f"     Timezone: {config_data.get('timezone', reg.get('timezone'))}")
-            devs = config_data.get("connected_devices") or []
-            print(f"     Devices:  {len(devs)} authorized device(s) registered.")
-            bound_devs = sync_result.get("reconciled_devices", [])
-            print(f"     Hardware: {len(bound_devs)} USB device(s) automatically bound.\n")
-            return 0
+            if result.get("status") in ("SUCCESS", "ACTIVATED", "ALREADY_APPLIED"):
+                cfg_ver = result.get("config_version", 1)
+                print(f" {GREEN}[✓]{RESET} Configuration synchronized via RabbitMQ (version {cfg_ver}).")
+                apply_res = result.get("apply_result", {})
+                bound_devs = apply_res.get("reconciled_devices", [])
+                print(f"     Hardware: {len(bound_devs)} USB device(s) automatically bound.\n")
+                return 0
+            elif result.get("status") == "PENDING_ASYNC":
+                print(f" {GREEN}[✓]{RESET} Sync request sent via RabbitMQ.")
+                print(f"     {DIM}Background listener will apply updates when middleware delivers configuration.{RESET}\n")
+                return 0
+            else:
+                err = result.get("error") or result.get("detail", "Sync failed")
+                print(f" {RED}[✗]{RESET} Sync failed: {err}\n")
+                return 1
 
         else:
             print("Invalid hub action. Choose: registration-status, activate, sync.")
@@ -1720,10 +1806,11 @@ def build_parser() -> argparse.ArgumentParser:
     hub_subs = hub_parser.add_subparsers(dest="hub_action", required=True)
     hub_subs.add_parser("registration-status", aliases=["status"], help="Display authoritative registration state and lease")
     act_p = hub_subs.add_parser("activate", help="Claim and activate registered hub using activation code")
-    act_p.add_argument("--activation-code", "-c", default=None, help="One-time activation code from Django")
-    act_p.add_argument("--middleware-url", "-m", default=None, help="Base URL of Django middleware")
+    act_p.add_argument("--code", "-c", dest="activation_code", default=None, help="One-time activation code from Django")
+    act_p.add_argument("--activation-code", default=None, help=argparse.SUPPRESS)
+    act_p.add_argument("--middleware-url", "-m", default=None, help="Base URL of Django middleware (optional, defaults to RabbitMQ)")
     sync_p = hub_subs.add_parser("sync", help="Synchronize configuration and authorized devices from Django")
-    sync_p.add_argument("--middleware-url", "-m", default=None, help="Base URL of Django middleware")
+    sync_p.add_argument("--middleware-url", "-m", default=None, help="Base URL of Django middleware (optional, defaults to RabbitMQ)")
 
     # doctor
     subparsers.add_parser("doctor", help="Run comprehensive health diagnostics")

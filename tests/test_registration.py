@@ -414,3 +414,47 @@ async def test_iothubctl_devices_approved_list(temp_db, sample_activation_respon
     assert "dev-001" in captured
     assert "Water Valve Controller" in captured
     assert "dev-002" in captured
+
+
+@pytest.mark.asyncio
+async def test_iothubctl_hub_activate_rabbitmq(temp_db, sample_activation_response, capsys, monkeypatch):
+    """iothubctl hub activate uses RabbitMQ and activates hub without requiring HTTP middleware URL."""
+    from core.registration_listener import RegistrationListener
+
+    async def mock_activate(*a, **k):
+        return {
+            "status": "ACTIVATED",
+            "registration": sample_activation_response,
+            "apply_result": {"status": "SUCCESS"},
+        }
+
+    monkeypatch.setattr(RegistrationListener, "activate_via_rabbitmq", mock_activate)
+    args = argparse.Namespace(db=temp_db.db_path, hub_action="activate", activation_code="ACT-TEST-123", middleware_url=None)
+    code = await cmd_hub(args)
+    assert code == 0
+
+    captured = capsys.readouterr().out
+    assert "Activation credential validated via RabbitMQ" in captured
+    assert "Plants Hub 01" in captured
+    assert "hub-3417ebc3b479" in captured
+
+
+@pytest.mark.asyncio
+async def test_iothubctl_hub_sync_rabbitmq(temp_db, sample_activation_response, capsys, monkeypatch):
+    """iothubctl hub sync uses RabbitMQ without requiring HTTP middleware URL."""
+    from core.registration_listener import RegistrationListener
+
+    async def mock_sync(*a, **k):
+        return {
+            "status": "SUCCESS",
+            "config_version": 2,
+            "apply_result": {"reconciled_devices": []},
+        }
+
+    monkeypatch.setattr(RegistrationListener, "sync_via_rabbitmq", mock_sync)
+    args = argparse.Namespace(db=temp_db.db_path, hub_action="sync", middleware_url=None)
+    code = await cmd_hub(args)
+    assert code == 0
+
+    captured = capsys.readouterr().out
+    assert "Configuration synchronized via RabbitMQ" in captured

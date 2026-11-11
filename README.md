@@ -87,19 +87,16 @@ cd RnR_iot_hub
 sudo bash install.sh
 ```
 
-The installer launches the interactive V2 activation wizard:
+The installer prompts for your one-time activation code and communicates with Django middleware over RabbitMQ:
 
 ```text
-RN Solutions — RNHub Setup
-
-Middleware URL:
-https://api.example.com
+RN Solutions — RNHub Activation
 
 Enter Hub Activation Code:
 ************
 
-Connecting to RN Solutions middleware...
-[PASS] Activation credential validated
+Connecting to middleware via RabbitMQ (47.236.59.210:5672)...
+[PASS] Activation credential validated via RabbitMQ
 [PASS] Registered hub found
 [PASS] Hub identity verified
 
@@ -109,7 +106,7 @@ Resource    : Cutting Machine 1
 Location    : Greenhouse A - Rack 3
 Timezone    : Asia/Colombo
 
-[PASS] Configuration saved securely
+[PASS] Configuration saved securely to SQLite
 [PASS] iothubd service installed
 [PASS] Registration activated
 
@@ -123,12 +120,10 @@ The operator does **not** need to manually re-enter the name, resource mapping, 
 ## 3. Installation Options & Headless Provisioning
 
 ### Non-Interactive / Scripted Activation
-For automated deployment or provisioning scripts, pass the credentials directly:
+For automated deployment or provisioning scripts, pass the activation code directly:
 
 ```bash
-sudo bash install.sh \
-  --middleware-url "https://api.example.com" \
-  --activation-code "ACT-3417EB-9921"
+sudo bash install.sh --activation-code "ACT-3417EB-9921"
 ```
 
 ### Offline / Airgapped Installation
@@ -296,20 +291,25 @@ Approved Devices      : 2 registered
 ```
 
 ### 2. Manual Configuration Synchronization
-When administrative changes are made in the React portal (e.g., added devices or updated location), pull and apply the changes immediately:
+When administrative changes are made in the React portal (e.g., added devices or updated location), pull and apply the changes immediately over RabbitMQ:
 ```bash
 sudo iothubctl hub sync
 ```
 *Output:*
 ```text
-Connecting to middleware at https://api.example.com...
-[PASS] Hub configuration synchronized successfully (Config version 5 applied).
+Synchronizing configuration from Django middleware via RabbitMQ...
+[✓] Configuration synchronized via RabbitMQ (version 5).
+    Hardware: 2 USB device(s) automatically bound.
 ```
 
 ### 3. Activate Post-Installation (If installed offline)
 Claim an existing Django hub registration from an already-installed hub:
 ```bash
-sudo iothubctl hub activate --code "ACT-3417EB-9921" --middleware-url "https://api.example.com"
+sudo iothubctl hub activate --code "ACT-3417EB-9921"
+```
+Or interactively prompt for the activation code:
+```bash
+sudo iothubctl hub activate
 ```
 
 ---
@@ -544,8 +544,8 @@ sudo iothubctl uninstall --purge
 | Category | Command | Description |
 | :--- | :--- | :--- |
 | **Hub Registration** | `sudo iothubctl hub registration-status` | Display verified Django registration identity, location, and lease status |
-| | `sudo iothubctl hub sync` | Synchronize configuration version and approved devices from Django middleware |
-| | `sudo iothubctl hub activate --code <c> --middleware-url <u>` | Claim an existing Django registration using an activation code |
+| | `sudo iothubctl hub sync` | Synchronize configuration version and approved devices from Django middleware via RabbitMQ |
+| | `sudo iothubctl hub activate [--code <c>]` | Claim an existing Django registration using an activation code via RabbitMQ |
 | **Status** | `sudo iothubctl status` | Overall system, queue, device, registration, and schedule status |
 | **Diagnostics** | `sudo iothubctl doctor` | Comprehensive health check across all subsystems |
 | **Devices** | `sudo iothubctl devices approved` | Display inventory of devices approved by Django middleware |

@@ -137,7 +137,7 @@ class IoTInstaller:
         self.caller_dir = Path(cwd).resolve() if cwd else Path.cwd()
         self.source_dir = Path(__file__).resolve().parent
         self.activation_code = activation_code
-        self.middleware_url = middleware_url or os.environ.get("MIDDLEWARE_URL", "https://api.example.com")
+        self.middleware_url = middleware_url or os.environ.get("MIDDLEWARE_URL")
         self.offline = offline
         self.migrate_identity = migrate_identity
         self.registration_data: Optional[dict] = None
@@ -518,72 +518,119 @@ class IoTInstaller:
         try:
             import getpass
 
-            # 1. Middleware URL
-            cur_url = self.middleware_url or self.config_vars.get("MIDDLEWARE_URL", "https://api.example.com")
-            if sys.stdin.isatty() and not self.middleware_url:
-                mid_url = input(f"\nMiddleware URL:\n[{cur_url}]: ").strip() or cur_url
-            else:
-                mid_url = cur_url
-            self.middleware_url = mid_url
-            self.config_vars["MIDDLEWARE_URL"] = mid_url
-
-            # 2. Activation Code
+            # Activation Code
             act_code = self.activation_code
             if not act_code and sys.stdin.isatty():
-                act_code = getpass.getpass("\nEnter Hub Activation Code:\n").strip()
+                try:
+                    act_code = getpass.getpass("\nEnter Hub Activation Code (leave empty to skip):\n").strip()
+                except Exception:
+                    pass
 
             if not act_code:
                 if not sys.stdin.isatty():
                     log_ok("Non-interactive mode without activation code. Preserving loaded/default configuration.")
                     return
-                log_warn("No activation code entered. Running in offline/unregistered mode.")
+                log_ok("No activation code entered. You can activate later using 'sudo iothubctl hub activate'.")
                 return
 
-            print(f"\n{BOLD}Connecting to RN Solutions middleware...{RESET}")
+            self.activation_code = act_code
+            self.config_vars["AUTH_ACTIVATION_CODE"] = act_code
+
+            # Check if an explicit HTTP middleware URL was provided
+            mid_url = self.middleware_url or self.config_vars.get("MIDDLEWARE_URL")
+            if mid_url and "api.example.com" not in mid_url:
+                print(f"\n{BOLD}Connecting to RN Solutions middleware ({mid_url})...{RESET}")
+                sys.path.insert(0, str(self.source_dir))
+                sys.path.insert(0, str(self.opt_dir))
+                from core.registration_client import RegistrationClient
+
+                client = RegistrationClient(middleware_url=mid_url, verify_ssl=False)
+                data = client.activate_sync(activation_code=act_code)
+                log_ok("Activation credential validated via HTTP")
+                log_ok("Registered hub found")
+                log_ok("Hub identity verified\n")
+                self.registration_data = data
+                hub_name = data.get("hub_name", "RNHub")
+                hub_id = data.get("hub_id", "hub-01")
+                res_id = data.get("resource_id", "N/A")
+                loc = data.get("installation_location", "Main Site")
+                tz = data.get("timezone", "Asia/Colombo")
+
+                print(f"{BOLD}Hub Name    : {hub_name}{RESET}")
+                print(f"{BOLD}Hub ID      : {hub_id}{RESET}")
+                print(f"{BOLD}Resource    : {res_id}{RESET}")
+                print(f"{BOLD}Location    : {loc}{RESET}")
+                print(f"{BOLD}Timezone    : {tz}{RESET}\n")
+
+                self.config_vars["HUB_ID"] = hub_id
+                self.config_vars["SCHEDULE_TIMEZONE"] = tz
+                log_ok("Configuration saved securely")
+                log_ok("Registration activated")
+                return
+
+            # Default: RabbitMQ-based activation
+            print(f"\n{BOLD}Activating hub via RabbitMQ...{RESET}")
             sys.path.insert(0, str(self.source_dir))
             sys.path.insert(0, str(self.opt_dir))
-            from core.registration_client import RegistrationClient
+            import asyncio
+            from core.registration_listener import RegistrationListener
+            from storage.database import DatabaseManager
 
-            client = RegistrationClient(middleware_url=mid_url, verify_ssl=False)
-            data = client.activate_sync(activation_code=act_code)
+            rmq_url = self.config_vars.get("RABBITMQ_URL")
+            if not rmq_url:
+                h = self.config_vars.get("RABBITMQ_HOST", "localhost")
+                p = self.config_vars.get("RABBITMQ_AMQP_PORT", "5672")
+                u = self.config_vars.get("RABBITMQ_USER", "guest")
+                pwd = self.config_vars.get("RABBITMQ_PASSWORD", "guest")
+                vh = self.config_vars.get("RABBITMQ_VHOST", "/")
+                from urllib.parse import quote
+                rmq_url = f"amqp://{quote(u)}:{quote(pwd)}@{h}:{p}/{quote(vh, safe='')}"
 
-            log_ok("Activation credential validated")
-            log_ok("Registered hub found")
-            log_ok("Hub identity verified\n")
+            db = DatabaseManager(db_path=self.db_path)
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(db.connect())
+                res = loop.run_until_complete(
+                    RegistrationListener.activate_via_rabbitmq(
+                        activation_code=act_code,
+                        db=db,
+                        url=rmq_url,
+                        hub_id=self.config_vars.get("HUB_ID"),
+                        timeout=5.0,
+                    )
+                )
+                loop.run_until_complete(db.close())
+                loop.close()
 
-            self.registration_data = data
-            hub_name = data.get("hub_name", "RNHub")
-            hub_id = data.get("hub_id", "hub-01")
-            res_id = data.get("resource_id", "N/A")
-            loc = data.get("installation_location", "Main Site")
-            tz = data.get("timezone", "Asia/Colombo")
+                if res.get("status") == "ACTIVATED":
+                    data = res.get("registration", {})
+                    log_ok("Activation credential validated via RabbitMQ")
+                    log_ok("Registered hub found")
+                    log_ok("Hub identity verified\n")
+                    self.registration_data = data
+                    hub_name = data.get("hub_name", "RNHub")
+                    hub_id = data.get("hub_id", self.config_vars.get("HUB_ID", "hub-01"))
+                    res_id = data.get("resource_id", "N/A")
+                    loc = data.get("installation_location", "Main Site")
+                    tz = data.get("timezone", "Asia/Colombo")
 
-            print(f"{BOLD}Hub Name    : {hub_name}{RESET}")
-            print(f"{BOLD}Hub ID      : {hub_id}{RESET}")
-            print(f"{BOLD}Resource    : {res_id}{RESET}")
-            print(f"{BOLD}Location    : {loc}{RESET}")
-            print(f"{BOLD}Timezone    : {tz}{RESET}\n")
+                    print(f"{BOLD}Hub Name    : {hub_name}{RESET}")
+                    print(f"{BOLD}Hub ID      : {hub_id}{RESET}")
+                    print(f"{BOLD}Resource    : {res_id}{RESET}")
+                    print(f"{BOLD}Location    : {loc}{RESET}")
+                    print(f"{BOLD}Timezone    : {tz}{RESET}\n")
 
-            self.config_vars["HUB_ID"] = hub_id
-            self.config_vars["SCHEDULE_TIMEZONE"] = tz
-            if data.get("broker_credentials"):
-                bcreds = data["broker_credentials"]
-                if "host" in bcreds:
-                    self.config_vars["RABBITMQ_HOST"] = bcreds["host"]
-                if "port" in bcreds:
-                    self.config_vars["RABBITMQ_AMQP_PORT"] = str(bcreds["port"])
-                if "user" in bcreds:
-                    self.config_vars["RABBITMQ_USER"] = bcreds["user"]
-                if "password" in bcreds:
-                    self.config_vars["RABBITMQ_PASSWORD"] = bcreds["password"]
-                if "vhost" in bcreds:
-                    self.config_vars["RABBITMQ_VHOST"] = bcreds["vhost"]
-
-            log_ok("Configuration saved securely")
-            log_ok("Registration activated")
+                    self.config_vars["HUB_ID"] = hub_id
+                    self.config_vars["SCHEDULE_TIMEZONE"] = tz
+                    log_ok("Configuration saved securely")
+                    log_ok("Registration activated")
+                else:
+                    log_ok("Activation code saved locally. iothubd will complete registration when connected to RabbitMQ.")
+            except Exception as rmq_exc:
+                log_ok(f"Activation code saved locally. iothubd will complete registration when RabbitMQ starts.")
         except Exception as exc:
-            log_warn(f"Middleware activation failed: {exc}")
-            log_warn("Installation will continue in unregistered mode. You can activate later with 'iothubctl hub activate'.")
+            log_warn(f"Activation error: {exc}")
 
     def deploy_environment_file(self):
         """Generates /etc/iothub/iothub.env from resolved configuration without plaintext secrets."""
@@ -725,8 +772,11 @@ class IoTInstaller:
                     "rabbitmq.host": self.config_vars.get("RABBITMQ_HOST", "localhost"),
                     "rabbitmq.port": self.config_vars.get("RABBITMQ_AMQP_PORT", "5672"),
                     "rabbitmq.username": self.config_vars.get("RABBITMQ_USER", ""),
-                    "middleware.url": self.config_vars.get("MIDDLEWARE_URL", self.middleware_url),
+                    "middleware.url": self.config_vars.get("MIDDLEWARE_URL") or self.middleware_url or "",
                 }
+                if self.config_vars.get("AUTH_ACTIVATION_CODE"):
+                    plain_settings["auth.activation_code"] = self.config_vars["AUTH_ACTIVATION_CODE"]
+                    plain_settings["auth.status"] = "pending_activation"
                 for k, v in plain_settings.items():
                     conn.execute("""
                         INSERT INTO config_settings (config_key, storage_type, value_text, key_version, updated_at)
@@ -1126,7 +1176,7 @@ def parse_args():
     parser.add_argument(
         "--middleware-url",
         default=None,
-        help="Django middleware base URL (default: https://api.example.com)",
+        help="Django middleware base URL (optional HTTP fallback; defaults to RabbitMQ)",
     )
     parser.add_argument(
         "--offline",

@@ -48,6 +48,19 @@ class MockIncomingMessage:
         self.acked = False
         self.rejected = False
 
+    def process(self, requeue: bool = False):
+        msg = self
+        class _ProcessContext:
+            async def __aenter__(self):
+                return msg
+            async def __aexit__(self, exc_type, exc_val, exc_tb):
+                if exc_type is None:
+                    msg.acked = True
+                else:
+                    msg.rejected = True
+                return False
+        return _ProcessContext()
+
     async def ack(self) -> None:
         self.acked = True
 
@@ -377,3 +390,156 @@ async def test_v2_duplicate_config_hash_already_applied(env_v2, section4_config_
     res2 = await mgr.apply_configuration(section4_config_snapshot)
     assert res2["status"] == "ALREADY_APPLIED"
     assert res2["config_version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_v2_registration_listener_hello_with_pending_activation_code(env_v2):
+    """Validates that RegistrationListener advertises pending activation code in hub.hello and hub.activate."""
+    cfg = env_v2["cfg"]
+    await cfg.set_setting("auth.activation_code", "ACT-3417-9921")
+
+    listener = RegistrationListener(
+        hub_id="hub-3417ebc3b479",
+        hub_uuid="3417ebc3-b479-4b11-8f93-911b2c349abc",
+        auto_config_manager=env_v2["manager"],
+    )
+    mock_ex = MockExchange("hub_results")
+    listener.ack_exchange = mock_ex
+    listener.channel = True
+
+    await listener.publish_hello()
+
+    # Should have published hub.hello and hub.activate
+    rk_map = {p["routing_key"]: p["payload"] for p in mock_ex.published}
+    assert "hub.hub-3417ebc3b479.hello" in rk_map
+    hello_payload = rk_map["hub.hub-3417ebc3b479.hello"]
+    assert hello_payload["status"] == "pending_activation"
+    assert hello_payload["activation_code"] == "ACT-3417-9921"
+
+    assert "hub.hub-3417ebc3b479.activate" in rk_map
+    act_payload = rk_map["hub.hub-3417ebc3b479.activate"]
+    assert act_payload["message_type"] == "hub.activate"
+    assert act_payload["activation_code"] == "ACT-3417-9921"
+
+
+@pytest.mark.asyncio
+async def test_v2_registration_listener_clears_activation_code_on_success(env_v2, section4_config_snapshot):
+    """Validates that a pending activation code is cleared from SQLite once config snapshot is successfully applied."""
+    cfg = env_v2["cfg"]
+    await cfg.set_setting("auth.activation_code", "ACT-3417-9921")
+    assert await cfg.get_setting("auth.activation_code") == "ACT-3417-9921"
+
+    listener = RegistrationListener(
+        hub_id="hub-3417ebc3b479",
+        hub_uuid="3417ebc3-b479-4b11-8f93-911b2c349abc",
+        auto_config_manager=env_v2["manager"],
+    )
+    mock_ex = MockExchange("hub_results")
+    listener.ack_exchange = mock_ex
+    listener.channel = True
+
+    incoming = MockIncomingMessage(section4_config_snapshot)
+    await listener.handle_message(incoming)
+
+    # Activation code should be cleared
+    cleared_code = await cfg.get_setting("auth.activation_code")
+    assert cleared_code is None
+
+
+@pytest.mark.asyncio
+async def test_v2_rabbitmq_activation_timeout_stores_pending_code(env_v2, monkeypatch):
+    """Validates that if middleware does not reply immediately over RabbitMQ, activation code is stored locally for daemon."""
+    db = env_v2["db"]
+    cfg = env_v2["cfg"]
+
+    class MockChannel:
+        def __init__(self):
+            self.is_closed = False
+        async def set_qos(self, *a, **k): pass
+        async def declare_exchange(self, name, *a, **k): return MockExchange(name)
+        async def get_exchange(self, name): return MockExchange(name)
+        async def declare_queue(self, name=None, *a, **k):
+            q = MockExchange(name or "amq.gen-mock")
+            q.bind = lambda *a, **k: asyncio.sleep(0)
+            q.consume = lambda *a, **k: asyncio.sleep(0, result="ctag")
+            q.cancel = lambda *a, **k: asyncio.sleep(0)
+            return q
+        async def close(self): self.is_closed = True
+
+    class MockConn:
+        def __init__(self):
+            self.is_closed = False
+        async def channel(self): return MockChannel()
+        async def close(self): self.is_closed = True
+
+    import aio_pika
+    monkeypatch.setattr(aio_pika, "connect_robust", lambda *a, **k: asyncio.sleep(0, result=MockConn()))
+
+    res = await RegistrationListener.activate_via_rabbitmq(
+        activation_code="ACT-999-TIMEOUT",
+        db=db,
+        url="amqp://mock",
+        hub_id="hub-3417ebc3b479",
+        timeout=0.05,
+    )
+
+    assert res["status"] == "PENDING_ASYNC"
+    assert res["activation_code"] == "ACT-999-TIMEOUT"
+    assert await cfg.get_setting("auth.activation_code") == "ACT-999-TIMEOUT"
+
+
+@pytest.mark.asyncio
+async def test_v2_rabbitmq_activation_success_roundtrip(env_v2, section4_config_snapshot, monkeypatch):
+    """Validates immediate round-trip RabbitMQ activation applying Section 4 registration snapshot."""
+    db = env_v2["db"]
+    cfg = env_v2["cfg"]
+
+    class MockAMQPQueue:
+        def __init__(self, name: str):
+            self.name = name
+            self.callback = None
+        async def bind(self, *a, **k): pass
+        async def consume(self, callback, *a, **k):
+            self.callback = callback
+            # As soon as consumed, simulate middleware publishing section4_config_snapshot
+            asyncio.create_task(self._deliver())
+            return "tag_1"
+        async def _deliver(self):
+            await asyncio.sleep(0.01)
+            if self.callback:
+                msg = MockIncomingMessage(section4_config_snapshot)
+                await self.callback(msg)
+        async def cancel(self, *a, **k): pass
+
+    class MockChannel:
+        def __init__(self):
+            self.is_closed = False
+        async def set_qos(self, *a, **k): pass
+        async def declare_exchange(self, name, *a, **k): return MockExchange(name)
+        async def get_exchange(self, name): return MockExchange(name)
+        async def declare_queue(self, name=None, *a, **k): return MockAMQPQueue(name or "amq.gen-reply")
+        async def close(self): self.is_closed = True
+
+    class MockConn:
+        def __init__(self):
+            self.is_closed = False
+        async def channel(self): return MockChannel()
+        async def close(self): self.is_closed = True
+
+    import aio_pika
+    monkeypatch.setattr(aio_pika, "connect_robust", lambda *a, **k: asyncio.sleep(0, result=MockConn()))
+
+    res = await RegistrationListener.activate_via_rabbitmq(
+        activation_code="ACT-SUCCESS-123",
+        db=db,
+        url="amqp://mock",
+        hub_id="hub-3417ebc3b479",
+        timeout=2.0,
+    )
+
+    assert res["status"] == "ACTIVATED"
+    assert res["registration"]["hub_id"] == "hub-3417ebc3b479"
+    assert res["apply_result"]["status"] == "SUCCESS"
+    assert await cfg.get_setting("auth.activation_code") is None
+
+
