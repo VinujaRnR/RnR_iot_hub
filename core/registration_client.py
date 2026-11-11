@@ -336,3 +336,4 @@ class RegistrationClient:
         """Synchronous wrapper for device enrollment authorization."""
         import asyncio
         return asyncio.run(self.authorize_device(registration_device_id, device_mac, port, profile))
+

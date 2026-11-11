@@ -10,118 +10,187 @@ The **RnR Linux IoT Hub** is an autonomous, reliable Linux system service design
 
 ```mermaid
 graph TD
+    Portal[React RNHub Portal /product/#/hubsetup/new] -->|Resource, Sub-Resource, Hub Identity, Devices| Django[Django Middleware & MySQL Authority]
+    Django -->|Short-lived Activation Code & Config Sync| Daemon[Linux RNHub - iothubd]
+    Daemon -->|Local SQLite Registry & Encryption| LocalDB[(SQLite Storage /var/lib/iothub/iothub.db)]
+    
     Backend[Production Management Backend] -->|AMQP Commands / Schedules| RMQ[(RabbitMQ Broker)]
-    RMQ -->|Pika Consumer| Ingestion[Schedule Normalizer & Validator]
-    Ingestion -->|ACID Persistence| DB[(SQLite Storage /var/lib/iothub/iothub.db)]
-    DB --> Engine[Deterministic Time Scheduler]
-    Engine -->|Action Dispatcher| Router[USB Action Router & Channel Verifier]
-    Router -->|Framed Serial ASCII/JSON| Nano[USB IoT Actuators / Arduino Nano]
+    RMQ -->|Pika Consumer & Registration Guard| Ingestion[Schedule Normalizer & Ingestion]
+    Ingestion -->|ACID Persistence| LocalDB
+    LocalDB --> Engine[Deterministic Time Scheduler]
+    Engine -->|Action Dispatcher & Guard| Router[USB Action Router & Channel Verifier]
+    Router -->|Framed Serial ASCII/JSON| Nano[Approved USB IoT Actuators / Arduino Nano]
     Nano -->|Execution ACK / Outcomes| Router
-    Router -->|Transactional Outbox| DB
-    DB -->|Outbox Publisher| RMQ
-    Supervisor[HubSupervisor & Watchdog] -.->|Monitors System Health & Ports| Engine
+    Router -->|Transactional Outbox| LocalDB
+    LocalDB -->|Outbox Publisher| RMQ
+    Supervisor[HubSupervisor & Watchdog] -.->|Heartbeat, Lease Check & Health| Daemon
+    Supervisor -.->|Periodic Telemetry| Django
     Admin[Operator / Admin] <-->|CLI Commands| CLI[iothubctl CLI Tool]
-    CLI <--> DB
+    CLI <--> LocalDB
 ```
 
 ### Core Architecture Highlights
-* **Logical MAC vs Transient Port**: Hardware nodes are identified permanently by their unique MAC addresses (`98a316e6b658`). Linux serial device paths (`/dev/ttyUSB0`, `/dev/ttyUSB1`) are treated as dynamic connections that rebind automatically upon reconnection or reboot.
-* **Device Profiles**: Channels (e.g. `relay:light`, `relay:water_valve`) are constrained by strict profiles. Commands outside permitted actions or exceeding safety limits (`max_on_seconds`) are blocked before touching hardware.
-* **Crash-Resilient State Machine**: Scheduled actions transition through `PENDING -> EXECUTING -> COMPLETED / FAILED`. Rebooting or restarting the daemon never duplicates physical relay activations.
-* **Isolated AES-256-GCM Encryption**: Sensitive credentials (such as RabbitMQ passwords) are encrypted in SQLite using a distinct, restricted master key at `/etc/iothub/keys/master.key` (mode `0600`).
+* **Django Middleware Authority**: Django is the sole authority for hub identity (`hub_uuid`, `hub_id`), resource/sub-resource mapping, location, timezone, and approved physical device inventory (`connected_devices`).
+* **Linux `iothubd` Execution Layer**: Remains fully responsible for local hardware execution, USB serial transport, RabbitMQ messaging, local SQLite storage, deterministic schedules, and watchdog health.
+* **CLI-Only Linux Administration**: Linux installation, activation, and hardware enrollment remain terminal-only via `install.py` / `install.sh` and `iothubctl`.
+* **Registration & Authorization Guards**: Runtime gatekeeper strictly enforces hub operating state (`UNREGISTERED`, `ACTIVATED`, `SUSPENDED`, `RETIRED`, `LEASE_EXPIRED`). Commands directed to unauthorized devices or unapproved physical boards are rejected before dispatch.
+* **Isolated AES-256-GCM Encryption**: Sensitive credentials (machine API tokens, broker passwords) are encrypted in SQLite using a restricted master key at `/etc/iothub/keys/master.key` (mode `0600`). No plaintext secrets are retained in environment files.
 
 ---
 
-## 2. Universal Installation via Git
+## 2. RNHub V2 — Middleware Registration & Activation Workflow
 
-The hub installer works across Debian/Ubuntu and systemd-compatible Linux systems. It automatically bootstraps Python dependencies, creates the isolated `iothub` service user with `dialout` hardware access, configures storage, and starts `iothubd.service`.
+Every Linux hub must be registered in the Django middleware before it can be activated and used in production:
 
-### Option A: Standard Git Installation (Recommended)
+```
++------------------------------------+          +--------------------------------------+
+| 1. Register in React Portal        |          | 2. Issue Activation Credential       |
+|    - Resource & Sub-resource       | -------> |    - Short-lived, one-time code      |
+|    - Hub Name & Location           |          |    - Admin-authorized                |
+|    - Proposed Connected Devices    |          |    - Hashed storage in Django        |
++------------------------------------+          +--------------------------------------+
+                                                                   |
+                                                                   v
++------------------------------------+          +--------------------------------------+
+| 4. Authoritative Verification      |          | 3. Run Linux Installer / Activation  |
+|    - Linux calls /agent/activate/  | <------- |    - Enter Middleware URL            |
+|    - Django validates token & bind |          |    - Enter Hub Activation Code       |
+|    - Returns canonical hub config  |          |    - Generate machine keys           |
++------------------------------------+          +--------------------------------------+
+                  |
+                  v
++------------------------------------+          +--------------------------------------+
+| 5. Store Registration in SQLite    |          | 6. Enroll Approved USB Hardware      |
+|    - hub_registration snapshot     | -------> |    - Verify against approved devices |
+|    - authorized_devices table      |          |    - Bind logical device & USB MAC   |
+|    - Encrypted machine API token   |          |    - Daemon starts normal operation  |
++------------------------------------+          +--------------------------------------+
+```
+
+### Step 1: Register Hub in React / Django Portal
+1. Navigate to `/product/#/hubsetup/new` in the React Management Portal.
+2. Select the parent **Resource** and **Sub-resource** (e.g. `Cutting Machine 1`).
+3. Enter hub details: **Hub Name**, **Installation Location**, and **Timezone**.
+4. Define proposed **Connected Devices** (e.g. `Lighting Controller`, `Water Valve Controller`).
+5. Save the record in Django.
+
+### Step 2: Issue One-Time Activation Credential
+In Django admin / hub management, generate a short-lived, one-time activation credential (`ACTIVATION_CODE`). This credential expires quickly, can be redeemed exactly once, and is hashed in Django storage.
+
+### Step 3: Run the Linux Installer on Target Computer
+Log in to the physical Linux machine and run the installer:
 
 ```bash
-# 1. Clone repository
 git clone https://github.com/VinujaRnR/RnR_iot_hub.git
 cd RnR_iot_hub
 
-# 2. Run universal installer (launches interactive configuration wizard)
 sudo bash install.sh
 ```
 
-### Option B: One-Liner Remote Installation (No Git Clone Required)
+The installer launches the interactive V2 activation wizard:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/VinujaRnR/RnR_iot_hub/main/install.sh | sudo bash
+```text
+RN Solutions — RNHub Setup
+
+Middleware URL:
+https://api.example.com
+
+Enter Hub Activation Code:
+************
+
+Connecting to RN Solutions middleware...
+[PASS] Activation credential validated
+[PASS] Registered hub found
+[PASS] Hub identity verified
+
+Hub Name    : Plants Hub 01
+Hub ID      : hub-3417ebc3b479
+Resource    : Cutting Machine 1
+Location    : Greenhouse A - Rack 3
+Timezone    : Asia/Colombo
+
+[PASS] Configuration saved securely
+[PASS] iothubd service installed
+[PASS] Registration activated
+
+Hub installation completed.
 ```
 
-### Option C: Non-Interactive / Headless Installation (Docker / CI)
-
-```bash
-sudo bash install.sh --no-wizard
-```
+The operator does **not** need to manually re-enter the name, resource mapping, location, or timezone that Django has already authorized.
 
 ---
 
-## 3. Post-Installation Configuration Wizard
+## 3. Installation Options & Headless Provisioning
 
-During interactive installation, the wizard prompts you for core hub settings:
+### Non-Interactive / Scripted Activation
+For automated deployment or provisioning scripts, pass the credentials directly:
 
-```text
-------------------------------------------------------------------------
- iothubd Configuration Wizard                                           
-------------------------------------------------------------------------
- [1] Hub ID [hub-01]: hub-01
- [2] RabbitMQ Host [localhost]: 47.236.59.210
- [3] RabbitMQ Port [5672]: 5672
- [4] RabbitMQ Username [guest]: rnr_iot_user
- [5] RabbitMQ Password: ****************
- [6] Schedule Timezone [Asia/Kolkata]: Asia/Kolkata
- [✓] Configuring Hub: hub-01 (Asia/Kolkata) | Broker: 47.236.59.210:5672
- [✓] RabbitMQ credentials encrypted with AES-256-GCM via master.key.
+```bash
+sudo bash install.sh \
+  --middleware-url "https://api.example.com" \
+  --activation-code "ACT-3417EB-9921"
+```
+
+### Offline / Airgapped Installation
+For test benches or isolated offline networks:
+
+```bash
+sudo bash install.sh --offline --hub-id "hub-01"
 ```
 
 ---
 
 ## 4. Hardware & USB Device Enrollment
 
-After installation, use `iothubctl` to register connected USB IoT boards (e.g. Arduino Nano):
+All physical USB devices must match the approved device inventory provided by Django middleware.
 
-### 1. Scan for Connected USB Devices
+### 1. View Middleware-Approved Devices
+Check the devices authorized by Django for this hub:
 ```bash
-sudo iothubctl devices scan
+sudo iothubctl devices approved
 ```
 *Output:*
 ```text
-Scanning USB serial interfaces...
-
-  [1] /dev/ttyUSB0
-      VID:PID: 1a86:7523
-      Description: CH340 serial converter
-      USB Serial:  1420
+Middleware-Approved Devices:
+------------------------------------------------------------------------------------------------------------------------
+Registration ID      Device Name                    Profile              Status               Bound MAC
+------------------------------------------------------------------------------------------------------------------------
+dev-001              Lighting Controller            plant_controller_v1  approved             98a316e6b658
+dev-002              Water Valve Controller         plant_controller_v1  pending_binding      --
+------------------------------------------------------------------------------------------------------------------------
 ```
 
-### 2. Auto-configure Connected Devices
-Automatically detects USB serial adapters and registers logical device aliases (`light_glow_1`, `/dev/ttyUSB0`):
+### 2. Scan for Connected USB Devices
+Identify physical hardware plugged into USB ports:
+```bash
+sudo iothubctl devices scan
+```
+
+### 3. Enroll Approved Device into SQLite Registry
+Bind a detected USB hardware node to a middleware-approved registration ID:
+```bash
+sudo iothubctl devices enroll \
+  --mac 98a316e6b658 \
+  --name "Lighting Controller" \
+  --port /dev/ttyUSB0 \
+  --profile plant_controller_v1 \
+  --registration-device-id dev-001
+```
+> **Security Guard**: If an operator attempts to enroll a device that is not approved in Django, `iothubctl` queries Django via `POST /api/rnhub-agent/devices/authorize/` or checks local authorized records. If unapproved, enrollment is blocked.
+
+### 4. Auto-configure Connected Devices
+Automatically detects USB serial adapters and registers approved logical device aliases:
 ```bash
 sudo iothubctl devices autoconfigure
 ```
 
-### 3. Enroll Device into SQLite Registry
-```bash
-sudo iothubctl devices enroll \
-  --mac 98a316e6b658 \
-  --name "Plant Controller A" \
-  --port /dev/ttyUSB0 \
-  --profile plant_controller_v1
-```
-*(Omit flags to run interactively with prompts).*
-
-### 4. List Registered Devices
+### 5. List Registered & Active Devices
 ```bash
 sudo iothubctl devices list
 ```
 
-### 5. Send Direct Hardware Commands
-Send framed JSON command payloads directly to a target hardware device to test actuation:
+### 6. Send Direct Hardware Commands
+Send framed JSON command payloads directly to an authorized hardware device:
 ```bash
 # Turn light ON
 sudo iothubctl devices send light_glow_1 LIGHT_ON
@@ -133,14 +202,62 @@ sudo iothubctl devices send light_glow_1 LIGHT_OFF
 sudo iothubctl devices send light_glow_1 LIGHT_ON --params '{"intensity": 80}'
 ```
 
-### 6. Remove a Device Binding
+### 7. Remove a Device Binding
 ```bash
 sudo iothubctl devices unbind --mac 98a316e6b658
 ```
 
 ---
 
-## 5. Device Profiles & Channel Mapping
+## 5. Hub Registration Status & Configuration Synchronization
+
+Once activated, `iothubd` periodically synchronizes state, validates operating leases, and sends telemetry heartbeats to Django.
+
+### 1. Check Registration & Lease Status
+```bash
+sudo iothubctl hub registration-status
+```
+*Output:*
+```text
+================================================================================
+Hub Registration Status (Django Middleware Authority)
+================================================================================
+Hub UUID              : 3417ebc3-b479-4b11-8f93-911b2c349abc
+Hub ID                : hub-3417ebc3b479
+Hub Name              : Plants Hub 01
+Operating State       : ACTIVATED
+Resource ID           : 12
+Sub-Resource ID       : 34
+Location              : Greenhouse A - Rack 3
+Timezone              : Asia/Colombo
+Config Version        : 4
+Middleware URL        : https://api.example.com
+Lease Expiration      : 2026-11-18 12:00:00 UTC (Valid)
+Verified At           : 2026-11-11 11:30:00 UTC
+Approved Devices      : 2 registered
+================================================================================
+```
+
+### 2. Manual Configuration Synchronization
+When administrative changes are made in the React portal (e.g., added devices or updated location), pull and apply the changes immediately:
+```bash
+sudo iothubctl hub sync
+```
+*Output:*
+```text
+Connecting to middleware at https://api.example.com...
+[PASS] Hub configuration synchronized successfully (Config version 5 applied).
+```
+
+### 3. Activate Post-Installation (If installed offline)
+Claim an existing Django hub registration from an already-installed hub:
+```bash
+sudo iothubctl hub activate --code "ACT-3417EB-9921" --middleware-url "https://api.example.com"
+```
+
+---
+
+## 6. Device Profiles & Channel Mapping
 
 Device profiles define permitted actuators, safety limits, and protocol formatting:
 
@@ -158,7 +275,7 @@ sudo iothubctl profiles show plant_controller_v1
 
 ---
 
-## 6. Daily Production Schedules & Automated Execution
+## 7. Daily Production Schedules & Automated Execution
 
 The hub accepts daily production schedules (e.g., [schedule.json](file:///home/rnr_hub/Documents/iot_hub/RnR_iot_hub/schedule.json)) ingested via RabbitMQ or loaded manually. The background daemon (`iothubd`) runs a 24/7 automated 60-second schedule watcher loop to track time slots and actuate hardware on state changes.
 
@@ -259,7 +376,7 @@ sudo iothubctl rabbitmq apply
 
 ---
 
-## 7. System Diagnostics & Monitoring
+## 8. System Diagnostics & Monitoring
 
 Run comprehensive health diagnostics on the background daemon:
 
@@ -285,7 +402,7 @@ sudo journalctl -u iothubd.service -f
 
 ---
 
-## 8. Secure Configuration & Secrets Management
+## 9. Secure Configuration & Secrets Management
 
 Modify persistent settings and encrypted credentials entirely from the CLI without editing plaintext `.env` files:
 
@@ -306,7 +423,7 @@ sudo iothubctl config set-secret rabbitmq.password
 
 ---
 
-## 9. Consistent Online Backups & Disaster Recovery
+## 10. Consistent Online Backups & Disaster Recovery
 
 Create consistent SQLite database snapshots while the daemon is actively running:
 
@@ -326,7 +443,7 @@ sudo iothubctl backup restore /var/lib/iothub/backups/backup_20261014_120000.db
 
 ---
 
-## 10. Updating the Application
+## 11. Updating the Application
 
 Update the hub to the latest Git release without losing database history, enrolled devices, or encrypted secrets:
 
@@ -343,7 +460,7 @@ sudo bash update.sh
 
 ---
 
-## 11. Uninstallation
+## 12. Uninstallation
 
 ### Standard Uninstall (Preserves Configuration & Database)
 Stops and disables `iothubd.service`, deletes `/opt/iothub` and `/usr/local/bin/iothubctl`, but **preserves** `/etc/iothub` (encryption keys) and `/var/lib/iothub` (database):
@@ -365,15 +482,19 @@ sudo iothubctl uninstall --purge
 
 ---
 
-## 12. Command Reference Table
+## 13. Command Reference Table
 
 | Category | Command | Description |
 | :--- | :--- | :--- |
-| **Status** | `sudo iothubctl status` | Overall system, queue, device, and schedule status |
+| **Hub Registration** | `sudo iothubctl hub registration-status` | Display verified Django registration identity, location, and lease status |
+| | `sudo iothubctl hub sync` | Synchronize configuration version and approved devices from Django middleware |
+| | `sudo iothubctl hub activate --code <c> --middleware-url <u>` | Claim an existing Django registration using an activation code |
+| **Status** | `sudo iothubctl status` | Overall system, queue, device, registration, and schedule status |
 | **Diagnostics** | `sudo iothubctl doctor` | Comprehensive health check across all subsystems |
-| **Devices** | `sudo iothubctl devices scan` | Scan `/dev/ttyUSB*` and `/dev/ttyACM*` interfaces |
+| **Devices** | `sudo iothubctl devices approved` | Display inventory of devices approved by Django middleware |
+| | `sudo iothubctl devices scan` | Scan `/dev/ttyUSB*` and `/dev/ttyACM*` interfaces |
 | | `sudo iothubctl devices autoconfigure` | Auto-detect and register serial adapters to logical aliases |
-| | `sudo iothubctl devices enroll` | Register a new IoT device with MAC identity |
+| | `sudo iothubctl devices enroll --mac <m> --name <n> --port <p> --profile <pr> [--registration-device-id <id>]` | Enroll an authorized IoT device with verified MAC identity |
 | | `sudo iothubctl devices list` | Display all approved device-to-port bindings |
 | | `sudo iothubctl devices send <dev> <act> [-p '...']` | Transmit direct command JSON payload to target hardware |
 | | `sudo iothubctl devices unbind --mac <MAC>` | Unbind and revoke a registered device |
