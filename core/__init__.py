@@ -16,6 +16,8 @@ from core.registration_guard import (
     RegistrationGuard,
     HubOperatingState,
 )
+from core.config_sync_manager import ConfigSyncManager
+from core.middleware_provisioning import MiddlewareProvisioningListener
 
 __all__ = [
     "CommandRouter",
@@ -33,5 +35,7 @@ __all__ = [
     "DeviceAuthorizationError",
     "RegistrationGuard",
     "HubOperatingState",
+    "ConfigSyncManager",
+    "MiddlewareProvisioningListener",
 ]
 

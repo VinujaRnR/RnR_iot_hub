@@ -90,13 +90,22 @@ class RabbitMQPublisher:
         # Declare durable action_status queue bound to results exchange so messages can be retrieved anytime
         # Bind exclusively to action.result (status json)
         try:
-            status_queue = await self.channel.declare_queue("action_status", durable=True)
+            status_queue = await self.channel.declare_queue(
+                "action_status",
+                durable=True,
+                arguments={"x-max-length": 1, "x-overflow": "drop-head"},
+            )
             await status_queue.bind(self.exchange, routing_key=f"hub.{self.hub_id}.action.result")
             await status_queue.bind(self.exchange, routing_key="hub.*.action.result")
             await status_queue.bind(self.exchange, routing_key="action_status.#")
             await status_queue.bind(self.exchange, routing_key="action_status")
         except Exception as q_err:
             logger.debug("action_status durable queue binding skipped: %s", q_err)
+            if self.channel.is_closed and not self.connection.is_closed:
+                self.channel = await self.connection.channel(publisher_confirms=True)
+                self.exchange = await self.channel.declare_exchange(
+                    self.results_exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
+                )
 
         # Prepare amq.topic and iot_commands for external API receivers
         try:
@@ -105,6 +114,11 @@ class RabbitMQPublisher:
             )
         except Exception as ex_err:
             logger.debug("amq.topic exchange declare skipped: %s", ex_err)
+            if self.channel.is_closed and not self.connection.is_closed:
+                self.channel = await self.connection.channel(publisher_confirms=True)
+                self.exchange = await self.channel.declare_exchange(
+                    self.results_exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
+                )
             self.device_exchange = None
 
         try:
@@ -113,6 +127,12 @@ class RabbitMQPublisher:
             )
         except Exception as ex_err:
             logger.debug("iot_commands exchange declare skipped: %s", ex_err)
+            if self.channel.is_closed and not self.connection.is_closed:
+                self.channel = await self.connection.channel(publisher_confirms=True)
+                self.exchange = await self.channel.declare_exchange(
+                    self.results_exchange_name, aio_pika.ExchangeType.TOPIC, durable=True
+                )
+            self.cmd_exchange = None
             self.cmd_exchange = None
 
         # On reconnection, flush any pending events retained during downtime

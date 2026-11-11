@@ -51,6 +51,7 @@ class DeviceBinding:
     connection_mode: str = "auto"
     approved: bool = True
     profile_id: str = "plant_controller_v1"
+    registration_device_id: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -118,6 +119,7 @@ class DeviceRegistry:
         profile_id: str = "plant_controller_v1",
         connection_mode: str = "auto",
         approved: bool = True,
+        registration_device_id: Optional[str] = None,
     ) -> DeviceBinding:
         """
         Enrolls a device MAC identity in the persistent SQLite registry.
@@ -130,8 +132,8 @@ class DeviceRegistry:
             """
             INSERT INTO device_bindings (
                 device_mac, device_name, port_hint, usb_vid, usb_pid, usb_serial,
-                connection_mode, approved, profile_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                connection_mode, approved, profile_id, registration_device_id, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(device_mac) DO UPDATE SET
                 device_name = excluded.device_name,
                 port_hint = excluded.port_hint,
@@ -141,6 +143,7 @@ class DeviceRegistry:
                 connection_mode = excluded.connection_mode,
                 approved = excluded.approved,
                 profile_id = excluded.profile_id,
+                registration_device_id = COALESCE(excluded.registration_device_id, device_bindings.registration_device_id),
                 updated_at = excluded.updated_at
             """,
             (
@@ -153,12 +156,13 @@ class DeviceRegistry:
                 connection_mode,
                 1 if approved else 0,
                 profile_id,
+                registration_device_id,
                 now,
                 now,
             ),
         )
         await conn.commit()
-        logger.info("Enrolled device '%s' (%s) bound to port '%s'", clean_mac, device_name, port_hint)
+        logger.info("Enrolled device '%s' (%s) bound to port '%s' [reg_id=%s]", clean_mac, device_name, port_hint, registration_device_id)
 
         return DeviceBinding(
             device_mac=clean_mac,
@@ -170,6 +174,7 @@ class DeviceRegistry:
             connection_mode=connection_mode,
             approved=approved,
             profile_id=profile_id,
+            registration_device_id=registration_device_id,
             created_at=now,
             updated_at=now,
         )
@@ -189,7 +194,7 @@ class DeviceRegistry:
         async with conn.execute(
             """
             SELECT device_mac, device_name, port_hint, usb_vid, usb_pid, usb_serial,
-                   connection_mode, approved, profile_id, created_at, updated_at
+                   connection_mode, approved, profile_id, registration_device_id, created_at, updated_at
             FROM device_bindings WHERE device_mac = ?
             """,
             (clean_mac,),
@@ -207,6 +212,7 @@ class DeviceRegistry:
                 connection_mode=row["connection_mode"] or "auto",
                 approved=bool(row["approved"]),
                 profile_id=row["profile_id"] or "plant_controller_v1",
+                registration_device_id=row["registration_device_id"] if "registration_device_id" in row.keys() else None,
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
             )
@@ -233,6 +239,7 @@ class DeviceRegistry:
                     connection_mode=r["connection_mode"] or "auto",
                     approved=bool(r["approved"]),
                     profile_id=r["profile_id"] or "plant_controller_v1",
+                    registration_device_id=r["registration_device_id"] if "registration_device_id" in r.keys() else None,
                     created_at=r["created_at"],
                     updated_at=r["updated_at"],
                 )

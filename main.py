@@ -52,6 +52,10 @@ from scheduler.state_reconciler import StateReconciler
 from storage import DatabaseManager, ScheduleRepository, EventOutbox, RegistrationRepository, ConfigRepository
 from core.registration_client import RegistrationClient
 from core.registration_guard import RegistrationGuard, HubOperatingState
+from core.config_sync_manager import ConfigSyncManager
+from core.middleware_provisioning import MiddlewareProvisioningListener
+from devices.device_registry import DeviceRegistry
+from devices.auto_enrollment import AutoEnrollmentManager
 from supervisor.supervisor import HubSupervisor
 
 logger = logging.getLogger("iothub")
@@ -101,181 +105,7 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
     # 1. Validate Configuration
     settings = validate_configuration()
 
-    # 2. Initialize SQLite Storage
-    logger.info("[INIT] Initializing SQLite database at '%s'...", DATABASE_PATH)
-    db = DatabaseManager(db_path=DATABASE_PATH)
-    await db.connect()
-    schedule_repo = ScheduleRepository(db)
-    event_outbox = EventOutbox(db)
-    reg_repo = RegistrationRepository(db)
-    guard = RegistrationGuard(reg_repo, lease_grace_hours=settings.OFFLINE_LEASE_GRACE_HOURS)
-    logger.info("[INIT] SQLite storage ready (WAL mode verified).")
-
-    # Registration & Activation check (RNHub V2)
-    reg_snapshot = await reg_repo.get_registration()
-    op_state = await guard.get_operating_state()
-    is_auth, auth_reason = await guard.check_hub_authorized()
-    logger.info("[SECURITY] Hub Operating State: %s (%s)", op_state, auth_reason)
-    if not is_auth:
-        logger.warning("[SECURITY] Production operations restricted until registration activation: %s", auth_reason)
-
-    # 3. Initialize USB Device Manager (Blocking serial I/O managed by worker threads)
-    logger.info("[INIT] Initializing USB Device Manager...")
-    device_manager = create_default_device_manager()
-    device_manager.registration_guard = guard
-    router = CommandRouter(hub_id=HUB_ID, device_manager=device_manager, registration_guard=guard)
-
-    # Persist registered devices in database
-    for dev_id in device_manager.list_devices():
-        dev_obj = device_manager.get_device(dev_id)
-        if dev_obj:
-            await db.save_device(
-                device_id=getattr(dev_obj, "device_id", dev_id),
-                name=getattr(dev_obj, "name", dev_id),
-                capabilities={
-                    "channels": getattr(dev_obj, "channels", ["relay:light"]),
-                    "actions": getattr(dev_obj, "supported_actions", ["LIGHTS_ON", "LIGHTS_OFF"]),
-                },
-                connection_state="ONLINE",
-            )
-    logger.info("[INIT] Registered %d device(s) and alias(es).", len(device_manager.list_devices()))
-
-    # 4. Restore Accepted Schedules & Reconcile In-Flight/Missed Actions
-    logger.info("[INIT] Restoring accepted schedules and reconciling in-flight actions...")
-    reconciler = StateReconciler(
-        db=db,
-        schedule_repo=schedule_repo,
-        device_manager=device_manager,
-    )
-    report = await reconciler.reconcile_on_startup()
-    logger.info(
-        "[INIT] State reconciliation complete: applied=%d, superseded=%d, skipped_unsafe=%d, future_pending=%d",
-        len(report.applied_actions),
-        len(report.superseded_actions),
-        len(report.skipped_unsafe_actions),
-        report.future_pending_count,
-    )
-
-    # 4b. Auto-load cached last_rabbitmq_message if database currently has no active schedules
-    try:
-        active_scheds = await schedule_repo.list_schedules(status="ACTIVE")
-        if not active_scheds:
-            for last_msg_path in ("/var/lib/iothub/last_rabbitmq_message.json", "/tmp/last_rabbitmq_message.json"):
-                if os.path.exists(last_msg_path):
-                    import json
-                    from ingestion.schedule_validator import ScheduleValidator
-                    from ingestion.schedule_normalizer import ScheduleNormalizer
-                    with open(last_msg_path, "r", encoding="utf-8") as f:
-                        meta = json.load(f)
-                    if meta.get("detected_type") != "SCHEDULE":
-                        continue
-                    payload = meta.get("payload", {})
-                    raw_body = meta.get("raw_body", "")
-                    val = ScheduleValidator().validate(payload)
-                    norm = ScheduleNormalizer().normalize(payload)
-                    if norm:
-                        await schedule_repo.save_schedule_with_actions(
-                            schedule_id=val.schedule_id,
-                            date=val.date,
-                            revision=val.revision,
-                            actions=norm,
-                            raw_json=raw_body,
-                        )
-                        logger.info("[INIT] Automatically imported cached schedule '%s' with %d actions from %s", val.schedule_id, len(norm), last_msg_path)
-                        break
-    except Exception as auto_err:
-        logger.debug("[INIT] Auto-import of cached schedule skipped: %s", auto_err)
-
-    # 5. Initialize Publisher with Durable Outbox
-    logger.info("[INIT] Starting RabbitMQ Publisher and Outbox Worker...")
-    publisher = RabbitMQPublisher(outbox=event_outbox)
-    try:
-        await publisher.connect()
-        logger.info("[INIT] RabbitMQ Publisher connected successfully.")
-    except Exception as exc:
-        logger.warning("[INIT] Initial RabbitMQ Publisher connection deferred: %s", exc)
-    await publisher.start_outbox_worker(interval=2.0)
-
-    # 6. Initialize Action Dispatcher & Local Schedule Execution Engine
-    logger.info("[INIT] Starting Local Schedule Execution Engine...")
-    dispatcher = ActionDispatcher(
-        device_manager=device_manager,
-        schedule_repo=schedule_repo,
-        outbox=event_outbox,
-        publisher=publisher,
-    )
-    schedule_engine = ScheduleEngine(
-        database=db,
-        schedule_repo=schedule_repo,
-        dispatcher=dispatcher,
-    )
-    await schedule_engine.start()
-
-    # Legacy TaskScheduler for periodic ad-hoc commands
-    scheduler = TaskScheduler(
-        dispatch_callback=lambda dev, act, params: device_manager.dispatch(dev, act, params)
-    )
-    await scheduler.start()
-
-    # 7. Initialize HubSupervisor (Recovery rules, device quarantining, clock & watchdog)
-    logger.info("[INIT] Starting HubSupervisor monitoring daemon...")
-    reg_client = None
-    if reg_snapshot and reg_snapshot.get("hub_uuid"):
-        api_tok = await reg_repo.config_repo.get_setting("auth.token") or reg_snapshot.get("api_token")
-        reg_client = RegistrationClient(
-            middleware_url=reg_snapshot.get("middleware_url") or settings.MIDDLEWARE_URL,
-            hub_uuid=reg_snapshot.get("hub_uuid"),
-            api_token=api_tok,
-            verify_ssl=settings.MIDDLEWARE_VERIFY_SSL,
-            timeout=settings.MIDDLEWARE_TIMEOUT_SECONDS,
-        )
-
-    supervisor = HubSupervisor(
-        check_interval=15.0,
-        db=db,
-        schedule_repo=schedule_repo,
-        device_manager=device_manager,
-        schedule_engine=schedule_engine,
-        outbox=event_outbox,
-        publisher=publisher,
-        registration_client=reg_client,
-        registration_guard=guard,
-        reg_repo=reg_repo,
-    )
-    dispatcher.supervisor = supervisor
-    schedule_engine.supervisor = supervisor
-    await supervisor.start()
-
-    # 8. Initialize RabbitMQ Consumer
-    logger.info("[INIT] Starting RabbitMQ Consumer loop...")
-    consumer = RabbitMQConsumer(
-        router=router,
-        db=db,
-        schedule_repo=schedule_repo,
-        publisher=publisher,
-        schedule_engine=schedule_engine,
-        registration_guard=guard,
-    )
-    supervisor.consumer = consumer
-
-    # 9. Initialize & Start Local Management API (Read-Only)
-    logger.info("[INIT] Starting Local Management API on http://%s:%d...", settings.API_HOST, settings.API_PORT)
-    management_app = create_app(
-        db=db,
-        schedule_repo=schedule_repo,
-        device_manager=device_manager,
-        supervisor=supervisor,
-        schedule_engine=schedule_engine,
-        outbox=event_outbox,
-        publisher=publisher,
-    )
-    api_server, api_task = start_background_api(
-        host=settings.API_HOST,
-        port=settings.API_PORT,
-        application=management_app,
-    )
-
-    # 10. Cancellation-Aware Signal Handling & Background Loops
+    # Early Signal Handling Setup
     stop_event = stop_override_event or asyncio.Event()
 
     def _signal_handler(sig_name: str):
@@ -287,93 +117,385 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
         try:
             loop.add_signal_handler(sig, lambda s=sig: _signal_handler(s.name))
         except (NotImplementedError, RuntimeError):
-            # Fallback for environments without Unix signal handlers
             pass
 
-    # Background Consumer Worker Loop with Automatic Reconnect
-    async def _consumer_loop():
-        while not stop_event.is_set():
-            try:
-                await consumer.start()
-                await stop_event.wait()
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                if stop_event.is_set():
-                    break
-                logger.error("[RABBITMQ] Connection lost: %s. Reconnecting in 5.0s...", exc)
+    # Declare component handles for reliable cleanup in finally block
+    db = None
+    device_manager = None
+    publisher = None
+    schedule_engine = None
+    scheduler = None
+    supervisor = None
+    consumer = None
+    consumer_task = None
+    provisioning_listener = None
+    provisioning_task = None
+    usb_task = None
+    api_server = None
+    api_task = None
+
+    try:
+        # 2. Initialize SQLite Storage
+        logger.info("[INIT] Initializing SQLite database at '%s'...", DATABASE_PATH)
+        db = DatabaseManager(db_path=DATABASE_PATH)
+        await db.connect()
+        schedule_repo = ScheduleRepository(db)
+        event_outbox = EventOutbox(db)
+        reg_repo = RegistrationRepository(db)
+        guard = RegistrationGuard(reg_repo, lease_grace_hours=settings.OFFLINE_LEASE_GRACE_HOURS)
+        logger.info("[INIT] SQLite storage ready (WAL mode verified).")
+
+        # Registration & Activation check (RNHub V2)
+        reg_snapshot = await reg_repo.get_registration()
+        op_state = await guard.get_operating_state()
+        is_auth, auth_reason = await guard.check_hub_authorized()
+        logger.info("[SECURITY] Hub Operating State: %s (%s)", op_state, auth_reason)
+        if not is_auth:
+            logger.warning("[SECURITY] Production operations restricted until registration activation: %s", auth_reason)
+
+        # Start Local Management API immediately so health checks & monitoring respond without delay
+        logger.info("[INIT] Starting Local Management API on http://%s:%d...", settings.API_HOST, settings.API_PORT)
+        management_app = create_app(
+            db=db,
+            schedule_repo=schedule_repo,
+            outbox=event_outbox,
+        )
+        api_server, api_task = start_background_api(
+            host=settings.API_HOST,
+            port=settings.API_PORT,
+            application=management_app,
+        )
+
+        if stop_event.is_set():
+            return
+
+        # 3. Initialize USB Device Manager (Blocking serial I/O managed by worker threads)
+        logger.info("[INIT] Initializing USB Device Manager...")
+        device_manager = create_default_device_manager()
+        device_manager.registration_guard = guard
+        management_app.state.device_manager = device_manager
+        router = CommandRouter(hub_id=HUB_ID, device_manager=device_manager, registration_guard=guard)
+
+        # Persist registered devices in database
+        for dev_id in device_manager.list_devices():
+            dev_obj = device_manager.get_device(dev_id)
+            if dev_obj:
+                await db.save_device(
+                    device_id=getattr(dev_obj, "device_id", dev_id),
+                    name=getattr(dev_obj, "name", dev_id),
+                    capabilities={
+                        "channels": getattr(dev_obj, "channels", ["relay:light"]),
+                        "actions": getattr(dev_obj, "supported_actions", ["LIGHTS_ON", "LIGHTS_OFF"]),
+                    },
+                    connection_state="ONLINE",
+                )
+        logger.info("[INIT] Registered %d device(s) and alias(es).", len(device_manager.list_devices()))
+
+        # 3b. Initialize Auto-Enrollment & Configuration Synchronization (RNHub V2)
+        device_registry = DeviceRegistry(db)
+        auto_enrollment = AutoEnrollmentManager(
+            db=db,
+            device_registry=device_registry,
+            device_manager=device_manager,
+            reg_repo=reg_repo,
+        )
+        config_sync = ConfigSyncManager(
+            db=db,
+            reg_repo=reg_repo,
+            config_repo=reg_repo.config_repo,
+            auto_enrollment=auto_enrollment,
+            expected_hub_id=settings.HUB_ID,
+            expected_hub_uuid=settings.HUB_UUID or (reg_snapshot.get("hub_uuid") if reg_snapshot else None),
+        )
+        try:
+            startup_enrollment = await auto_enrollment.discover_and_reconcile()
+            logger.info(
+                "[INIT] Auto-enrollment startup scan: bound=%d, pending=%d, rejected=%d",
+                len(startup_enrollment.get("bound", [])),
+                len(startup_enrollment.get("pending", [])),
+                len(startup_enrollment.get("rejected", [])),
+            )
+        except Exception as exc:
+            logger.debug("[INIT] Auto-enrollment startup scan notice: %s", exc)
+
+        if stop_event.is_set():
+            return
+
+        # 4. Restore Accepted Schedules & Reconcile In-Flight/Missed Actions
+        logger.info("[INIT] Restoring accepted schedules and reconciling in-flight actions...")
+        reconciler = StateReconciler(
+            db=db,
+            schedule_repo=schedule_repo,
+            device_manager=device_manager,
+        )
+        report = await reconciler.reconcile_on_startup()
+        logger.info(
+            "[INIT] State reconciliation complete: applied=%d, superseded=%d, skipped_unsafe=%d, future_pending=%d",
+            len(report.applied_actions),
+            len(report.superseded_actions),
+            len(report.skipped_unsafe_actions),
+            report.future_pending_count,
+        )
+
+        # 4b. Auto-load cached last_rabbitmq_message if database currently has no active schedules
+        try:
+            active_scheds = await schedule_repo.list_schedules(status="ACTIVE")
+            if not active_scheds:
+                for last_msg_path in ("/var/lib/iothub/last_rabbitmq_message.json", "/tmp/last_rabbitmq_message.json"):
+                    if os.path.exists(last_msg_path):
+                        import json
+                        from ingestion.schedule_validator import ScheduleValidator
+                        from ingestion.schedule_normalizer import ScheduleNormalizer
+                        with open(last_msg_path, "r", encoding="utf-8") as f:
+                            meta = json.load(f)
+                        if meta.get("detected_type") != "SCHEDULE":
+                            continue
+                        payload = meta.get("payload", {})
+                        raw_body = meta.get("raw_body", "")
+                        val = ScheduleValidator().validate(payload)
+                        norm = ScheduleNormalizer().normalize(payload)
+                        if norm:
+                            await schedule_repo.save_schedule_with_actions(
+                                schedule_id=val.schedule_id,
+                                date=val.date,
+                                revision=val.revision,
+                                actions=norm,
+                                raw_json=raw_body,
+                            )
+                            logger.info("[INIT] Automatically imported cached schedule '%s' with %d actions from %s", val.schedule_id, len(norm), last_msg_path)
+                            break
+        except Exception as auto_err:
+            logger.debug("[INIT] Auto-import of cached schedule skipped: %s", auto_err)
+
+        if stop_event.is_set():
+            return
+
+        # 5. Initialize Publisher with Durable Outbox
+        logger.info("[INIT] Starting RabbitMQ Publisher and Outbox Worker...")
+        publisher = RabbitMQPublisher(outbox=event_outbox)
+        management_app.state.publisher = publisher
+        try:
+            await publisher.connect()
+            logger.info("[INIT] RabbitMQ Publisher connected successfully.")
+        except Exception as exc:
+            logger.warning("[INIT] Initial RabbitMQ Publisher connection deferred: %s", exc)
+        await publisher.start_outbox_worker(interval=2.0)
+
+        if stop_event.is_set():
+            return
+
+        # 6. Initialize Action Dispatcher & Local Schedule Execution Engine
+        logger.info("[INIT] Starting Local Schedule Execution Engine...")
+        dispatcher = ActionDispatcher(
+            device_manager=device_manager,
+            schedule_repo=schedule_repo,
+            outbox=event_outbox,
+            publisher=publisher,
+        )
+        schedule_engine = ScheduleEngine(
+            database=db,
+            schedule_repo=schedule_repo,
+            dispatcher=dispatcher,
+        )
+        management_app.state.schedule_engine = schedule_engine
+        await schedule_engine.start()
+
+        # Legacy TaskScheduler for periodic ad-hoc commands
+        scheduler = TaskScheduler(
+            dispatch_callback=lambda dev, act, params: device_manager.dispatch(dev, act, params)
+        )
+        await scheduler.start()
+
+        # 7. Initialize HubSupervisor (Recovery rules, device quarantining, clock & watchdog)
+        logger.info("[INIT] Starting HubSupervisor monitoring daemon...")
+        reg_client = None
+        if reg_snapshot and reg_snapshot.get("hub_uuid"):
+            api_tok = await reg_repo.config_repo.get_setting("auth.token") or reg_snapshot.get("api_token")
+            reg_client = RegistrationClient(
+                middleware_url=reg_snapshot.get("middleware_url") or settings.MIDDLEWARE_URL,
+                hub_uuid=reg_snapshot.get("hub_uuid"),
+                api_token=api_tok,
+                verify_ssl=settings.MIDDLEWARE_VERIFY_SSL,
+                timeout=settings.MIDDLEWARE_TIMEOUT_SECONDS,
+            )
+
+        supervisor = HubSupervisor(
+            check_interval=15.0,
+            db=db,
+            schedule_repo=schedule_repo,
+            device_manager=device_manager,
+            schedule_engine=schedule_engine,
+            outbox=event_outbox,
+            publisher=publisher,
+            registration_client=reg_client,
+            registration_guard=guard,
+            reg_repo=reg_repo,
+            auto_enrollment=auto_enrollment,
+        )
+        management_app.state.supervisor = supervisor
+        dispatcher.supervisor = supervisor
+        schedule_engine.supervisor = supervisor
+        await supervisor.start()
+
+        # 8. Initialize RabbitMQ Consumer
+        logger.info("[INIT] Starting RabbitMQ Consumer loop...")
+        consumer = RabbitMQConsumer(
+            router=router,
+            db=db,
+            schedule_repo=schedule_repo,
+            publisher=publisher,
+            schedule_engine=schedule_engine,
+            registration_guard=guard,
+        )
+        supervisor.consumer = consumer
+
+        # 8b. Initialize Middleware Provisioning Listener (RNHub V2)
+        logger.info("[INIT] Starting Middleware Provisioning Listener...")
+        provisioning_listener = MiddlewareProvisioningListener(
+            url=settings.RABBITMQ_URL,
+            hub_id=settings.HUB_ID,
+            hub_uuid=settings.HUB_UUID or (reg_snapshot.get("hub_uuid") if reg_snapshot else None),
+            config_sync_manager=config_sync,
+        )
+
+        # 9. Verify Local Management API Ready
+        logger.info("[INIT] Local Management API operational on http://%s:%d", settings.API_HOST, settings.API_PORT)
+
+        # 10. Background Loops
+        # Background Consumer Worker Loop with Automatic Reconnect
+        async def _consumer_loop():
+            while not stop_event.is_set():
                 try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+                    await consumer.start()
+                    await stop_event.wait()
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    if stop_event.is_set():
+                        break
+                    logger.error("[RABBITMQ] Connection lost: %s. Reconnecting in 5.0s...", exc)
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+        consumer_task = asyncio.create_task(_consumer_loop(), name="consumer_loop")
+
+        # Background Provisioning Listener Loop with Automatic Reconnect (RNHub V2)
+        async def _provisioning_loop():
+            while not stop_event.is_set():
+                try:
+                    await provisioning_listener.start()
+                    await stop_event.wait()
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    if stop_event.is_set():
+                        break
+                    logger.warning("[PROVISIONING] Connection lost: %s. Reconnecting in 5.0s...", exc)
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+        provisioning_task = asyncio.create_task(_provisioning_loop(), name="provisioning_loop")
+
+        # Background USB Hardware Detector Task
+        async def _usb_monitor_loop():
+            detector = USBDetector()
+            scan_sec = float(USB_SCAN_INTERVAL)
+            while not stop_event.is_set():
+                try:
+                    # Run device scanning off main thread so pyudev doesn't block event loop
+                    ports = await loop.run_in_executor(None, detector.scan_serial_ports)
+                    for p in ports:
+                        port_path = p.get("port")
+                        if port_path and not device_manager.get_device(port_path):
+                            await db.save_device(
+                                device_id=port_path,
+                                name=f"USB Serial ({port_path})",
+                                capabilities={"channels": ["relay:light"], "actions": ["LIGHTS_ON", "LIGHTS_OFF"]},
+                                connection_state="ONLINE",
+                            )
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    logger.debug("[USB] Monitor scan exception: %s", exc)
+
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=scan_sec)
                 except asyncio.TimeoutError:
                     pass
 
-    consumer_task = asyncio.create_task(_consumer_loop(), name="consumer_loop")
+        usb_task = asyncio.create_task(_usb_monitor_loop(), name="usb_monitor")
 
-    # Background USB Hardware Detector Task
-    async def _usb_monitor_loop():
-        detector = USBDetector()
-        scan_sec = float(USB_SCAN_INTERVAL)
-        while not stop_event.is_set():
-            try:
-                # Run device scanning off main thread so pyudev doesn't block event loop
-                ports = await loop.run_in_executor(None, detector.scan_serial_ports)
-                for p in ports:
-                    port_path = p.get("port")
-                    if port_path and not device_manager.get_device(port_path):
-                        await db.save_device(
-                            device_id=port_path,
-                            name=f"USB Serial ({port_path})",
-                            capabilities={"channels": ["relay:light"], "actions": ["LIGHTS_ON", "LIGHTS_OFF"]},
-                            connection_state="ONLINE",
-                        )
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.debug("[USB] Monitor scan exception: %s", exc)
+        # 11. Continuous Operation
+        logger.info("=================================================================")
+        logger.info(" RnR IoT Hub is OPERATIONAL. Press Ctrl+C or send SIGTERM to exit.")
+        logger.info(" Management API available at: http://%s:%d", API_HOST, API_PORT)
+        logger.info("=================================================================")
 
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=scan_sec)
-            except asyncio.TimeoutError:
-                pass
-
-    usb_task = asyncio.create_task(_usb_monitor_loop(), name="usb_monitor")
-
-    # 11. Continuous Operation
-    logger.info("=================================================================")
-    logger.info(" RnR IoT Hub is OPERATIONAL. Press Ctrl+C or send SIGTERM to exit.")
-    logger.info(" Management API available at: http://%s:%d", API_HOST, API_PORT)
-    logger.info("=================================================================")
-
-    try:
         await stop_event.wait()
     finally:
         # =====================================================================
         # 12. Graceful Shutdown Sequence (Mermaid Diagram Specification)
         # =====================================================================
         logger.info("[SHUTDOWN] Step 1: Stopping acceptance of new work...")
-        consumer_task.cancel()
-        usb_task.cancel()
-        await consumer.stop()
-        await schedule_engine.stop()
-        await scheduler.stop()
+        if consumer_task and not consumer_task.done():
+            consumer_task.cancel()
+        if provisioning_task and not provisioning_task.done():
+            provisioning_task.cancel()
+        if usb_task and not usb_task.done():
+            usb_task.cancel()
+        if consumer:
+            try:
+                await consumer.stop()
+            except Exception:
+                pass
+        if provisioning_listener:
+            try:
+                await provisioning_listener.stop()
+            except Exception:
+                pass
+        if schedule_engine:
+            try:
+                await schedule_engine.stop()
+            except Exception:
+                pass
+        if scheduler:
+            try:
+                await scheduler.stop()
+            except Exception:
+                pass
 
         logger.info("[SHUTDOWN] Step 2: Persisting and resolving outstanding states...")
-        await supervisor.stop()
-        await publisher.close()
+        if supervisor:
+            try:
+                await supervisor.stop()
+            except Exception:
+                pass
+        if publisher:
+            try:
+                await publisher.close()
+            except Exception:
+                pass
 
         logger.info("[SHUTDOWN] Step 3: Closing Management API, USB connections, and SQLite database...")
         # Stop Management API
-        api_server.should_exit = True
-        try:
-            await asyncio.wait_for(api_task, timeout=2.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            api_task.cancel()
+        if api_server and api_task:
+            api_server.should_exit = True
+            try:
+                await asyncio.wait_for(api_task, timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                api_task.cancel()
 
         # Close all active USB hardware serial ports
-        device_manager.close_all()
+        if device_manager:
+            device_manager.close_all()
 
         # Close SQLite storage connection
-        await db.close()
+        if db:
+            await db.close()
 
         logger.info("=================================================================")
         logger.info(" RnR IoT Hub Daemon successfully shut down. Clean exit.          ")

@@ -63,6 +63,7 @@ class HubSupervisor:
         registration_client: Optional[Any] = None,
         registration_guard: Optional[Any] = None,
         reg_repo: Optional[Any] = None,
+        auto_enrollment: Optional[Any] = None,
         heartbeat_interval: float = 60.0,
     ):
         self.check_interval = check_interval
@@ -76,6 +77,7 @@ class HubSupervisor:
         self.registration_client = registration_client
         self.registration_guard = registration_guard
         self.reg_repo = reg_repo
+        self.auto_enrollment = auto_enrollment
         self.heartbeat_interval = heartbeat_interval
         self._last_heartbeat_time: float = 0.0
 
@@ -249,6 +251,9 @@ class HubSupervisor:
                 # 8. Middleware Registration Health & Heartbeat (RNHub V2)
                 await self.check_registration_health()
 
+                # 9. Hardware Auto-Enrollment & USB Reconnection (RNHub V2)
+                await self.check_hardware_auto_enrollment()
+
             except Exception as exc:
                 logger.error("Error in supervision check loop: %s", exc, exc_info=True)
 
@@ -298,6 +303,24 @@ class HubSupervisor:
                         await self.registration_client.acknowledge_config(remote_cfg_ver)
             except Exception as exc:
                 logger.debug("Middleware heartbeat notice: %s", exc)
+
+    async def check_hardware_auto_enrollment(self) -> None:
+        """
+        RNHub V2: Periodically monitors USB hardware presence, rediscovery,
+        and dynamically reconciles approved device bindings and port changes.
+        """
+        if not self.auto_enrollment:
+            return
+        try:
+            res = await self.auto_enrollment.discover_and_reconcile()
+            if res.get("port_changes"):
+                for chg in res["port_changes"]:
+                    self.emit_alert("INFO", f"USB port change detected: MAC {chg['mac']} moved from {chg['old_port']} to {chg['new_port']}.")
+            if res.get("rejected"):
+                for rej in res["rejected"]:
+                    self.emit_alert("WARNING", f"Unapproved USB device detected on {rej['port']}: {rej.get('reason')}.")
+        except Exception as exc:
+            logger.debug("Auto-enrollment supervision check notice: %s", exc)
 
     # Rule 1 & 9: System Clock Validation (Blocks unsafe timed execution)
     async def check_system_clock(self) -> bool:

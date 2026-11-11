@@ -138,11 +138,35 @@ For test benches or isolated offline networks:
 sudo bash install.sh --offline --hub-id "hub-01"
 ```
 
+### Existing Hub Migration (One-Time Upgrade to V2 Machine Identity)
+For an already-installed hub with working RabbitMQ credentials, migrate to the V2 machine identity and automated provisioning without requiring a full reinstall:
+
+```bash
+sudo bash install.sh --migrate-identity
+# Or via Python directly:
+sudo .venv/bin/python3 install.py --migrate-identity
+```
+This migrates local configuration, creates encryption keys if absent, registers the machine identity, and sets up automated provisioning without data loss.
+
 ---
 
-## 4. Hardware & USB Device Enrollment
+## 4. Hardware & USB Device Auto-Discovery and Enrollment
 
-All physical USB devices must match the approved device inventory provided by Django middleware.
+All physical USB devices must match the approved device inventory authorized by Django middleware.
+
+### Automated Discovery & Safe Enrollment (Default Runtime Behavior)
+When `iothubd` starts and during periodic supervision, `AutoEnrollmentManager`:
+1. **Scans USB serial interfaces** (`/dev/ttyUSB*`, `/dev/ttyACM*`).
+2. **Interrogates connected boards** using standard protocol handshakes (`HANDSHAKE` / `HELLO`).
+3. **Reads and normalizes hardware MAC** (12-character lowercase hex string).
+4. **Matches discovered devices against authorized inventory** (`authorized_devices` in SQLite).
+5. **Automatically binds approved devices** to local SQLite registry without requiring manual CLI intervention.
+6. **Handles USB port renumbering dynamically** (e.g. if `/dev/ttyUSB0` becomes `/dev/ttyUSB1`, its binding is safely restored based on stable hardware MAC).
+7. **Quarantines unapproved hardware**: Unknown or ambiguous hardware is marked `pending` and prevented from actuation. Revoked devices are explicitly rejected.
+8. **Enforces safe startup states**: Hardware configuration is decoupled from physical actuation; power outputs and relays remain **OFF** until explicitly commanded by approved schedules.
+
+### Manual Administrative & Recovery Tools (Optional)
+The following CLI commands serve as optional administrative inspection and recovery fallbacks:
 
 ### 1. View Middleware-Approved Devices
 Check the devices authorized by Django for this hub:
@@ -209,9 +233,42 @@ sudo iothubctl devices unbind --mac 98a316e6b658
 
 ---
 
-## 5. Hub Registration Status & Configuration Synchronization
+## 5. Automated Background Provisioning & Configuration Synchronization
 
-Once activated, `iothubd` periodically synchronizes state, validates operating leases, and sends telemetry heartbeats to Django.
+In RNHub V2, manual CLI synchronization commands are optional recovery tools. The `iothubd` daemon automatically performs initial setup, configuration synchronization, and hardware reconciliation upon connecting to RabbitMQ.
+
+### Background Provisioning Flow
+```text
++------------------+                    +--------------------+                    +---------------------+
+|   Linux iothubd  |                    |  RabbitMQ Broker   |                    |  Django Middleware  |
++------------------+                    +--------------------+                    +---------------------+
+         |                                         |                                         |
+         |---- 1. hub.hello (announce identity) -->|                                         |
+         |                                         |-------- forwarded to middleware ------->|
+         |                                         |                                         |
+         |                                         |<------- hub.<hub_id>.config ------------|
+         |<--- 2. Receive signed config payload ---|                                         |
+         |                                         |                                         |
+         |-- 3. Verify HMAC signature & revision   |                                         |
+         |-- 4. ACID SQLite transaction update     |                                         |
+         |-- 5. Auto-enroll USB hardware           |                                         |
+         |                                         |                                         |
+         |---- 6. hub.<hub_id>.config.ack -------->|                                         |
+         |                                         |-------- delivery confirmed ------------>|
+```
+
+1. **Hello Announcement**: When `iothubd` connects to RabbitMQ, `MiddlewareProvisioningListener` publishes a `hub.hello` message announcing the hub identity (`hub_id`, `hub_uuid`, `timestamp`).
+2. **Dedicated Queue Subscription**: Subscribes to `hub.<hub_id>.config` for signed configuration payloads.
+3. **Cryptographic & Revision Validation**:
+   - HMAC-SHA256 signature verification using the hub's secret or token.
+   - Exact identity verification (`hub_id` and `hub_uuid`).
+   - Revision gating: strictly rejects stale configurations (`config_version <= current_version`).
+4. **ACID SQLite Transaction**: `ConfigSyncManager` commits settings and approved devices in a single database transaction, preserving local schedules, operational histories, and outbox logs without database overwrites.
+5. **Reconciliation & Auto-Enrollment**: Automatically scans and binds newly approved physical devices or revokes unapproved ones.
+6. **Acknowledgment Emission**: Publishes `hub.<hub_id>.config.ack` confirming status (`SUCCESS` or `REJECTED`) and active revision.
+7. **Offline Safety Policy**: In the event of network disruption, `iothubd` safely continues operation with its last verified configuration snapshot under a configurable lease grace period (`OFFLINE_LEASE_GRACE_HOURS`).
+
+### Administrative & Recovery Tools (Optional)
 
 ### 1. Check Registration & Lease Status
 ```bash

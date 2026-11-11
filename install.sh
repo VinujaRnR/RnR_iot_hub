@@ -67,6 +67,8 @@ PURGE=false
 ASSUME_YES=false
 ACTIVATION_CODE=""
 MIDDLEWARE_URL=""
+OFFLINE=false
+MIGRATE_IDENTITY=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -85,6 +87,14 @@ while [[ $# -gt 0 ]]; do
         --middleware-url)
             MIDDLEWARE_URL="$2"
             shift 2
+            ;;
+        --offline)
+            OFFLINE=true
+            shift
+            ;;
+        --migrate-identity)
+            MIGRATE_IDENTITY=true
+            shift
             ;;
         --dry-run)
             DRY_RUN=true
@@ -236,6 +246,12 @@ if [ -n "$ACTIVATION_CODE" ]; then
 fi
 if [ -n "$MIDDLEWARE_URL" ]; then
     INSTALL_ARGS+=("--middleware-url" "$MIDDLEWARE_URL")
+fi
+if [ "$OFFLINE" = true ]; then
+    INSTALL_ARGS+=("--offline")
+fi
+if [ "$MIGRATE_IDENTITY" = true ]; then
+    INSTALL_ARGS+=("--migrate-identity")
 fi
 INSTALL_ARGS+=("--cwd" "$CALLER_PWD")
 

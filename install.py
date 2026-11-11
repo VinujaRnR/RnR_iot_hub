@@ -127,6 +127,7 @@ class IoTInstaller:
         activation_code: Optional[str] = None,
         middleware_url: Optional[str] = None,
         offline: bool = False,
+        migrate_identity: bool = False,
     ):
         self.destdir = Path(destdir).resolve() if destdir else None
         self.no_start = no_start
@@ -138,6 +139,7 @@ class IoTInstaller:
         self.activation_code = activation_code
         self.middleware_url = middleware_url or os.environ.get("MIDDLEWARE_URL", "https://api.example.com")
         self.offline = offline
+        self.migrate_identity = migrate_identity
         self.registration_data: Optional[dict] = None
         self.config_vars: dict = {}
 
@@ -486,6 +488,23 @@ class IoTInstaller:
 
         if self.offline:
             log_ok("Offline mode selected: skipping middleware activation.")
+            return
+
+        if self.migrate_identity:
+            log_step("Migrating existing hub identity to V2 machine identity...")
+            import uuid
+            existing_hub_id = self.config_vars.get("HUB_ID", "hub-01")
+            existing_uuid = self.config_vars.get("HUB_UUID") or str(uuid.uuid4())
+            self.registration_data = {
+                "hub_uuid": existing_uuid,
+                "hub_id": existing_hub_id,
+                "hub_name": f"Migrated Hub ({existing_hub_id})",
+                "status": "active",
+                "config_version": 1,
+                "timezone": self.config_vars.get("SCHEDULE_TIMEZONE", "Asia/Kolkata"),
+            }
+            log_ok(f"Migrated existing hub credentials for '{existing_hub_id}' to machine identity {existing_uuid}")
+            log_ok(f"Automatic provisioning configured on queue: hub.{existing_hub_id}.config")
             return
 
         # If stdin is not a tty (e.g. piped via curl | bash), attempt to reconnect to /dev/tty
@@ -1115,6 +1134,11 @@ def parse_args():
         help="Perform offline installation without registering with middleware",
     )
     parser.add_argument(
+        "--migrate-identity",
+        action="store_true",
+        help="Migrate an existing installed hub with working credentials to V2 machine identity and automated provisioning",
+    )
+    parser.add_argument(
         "--cwd",
         default="",
         help="Caller current working directory (for loading existing .env)",
@@ -1134,6 +1158,7 @@ def main():
         activation_code=args.activation_code,
         middleware_url=args.middleware_url,
         offline=args.offline,
+        migrate_identity=args.migrate_identity,
     )
     if args.uninstall:
         installer.uninstall(purge=args.purge, yes=args.yes)

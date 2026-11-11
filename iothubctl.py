@@ -136,6 +136,9 @@ async def cmd_status(args: argparse.Namespace) -> int:
         else:
             print(f" {BOLD}Hub ID:{RESET}          {hub_id}")
             print(f" {BOLD}Registration:{RESET}    {YELLOW}[!] UNREGISTERED — Run 'sudo iothubctl hub activate'{RESET}")
+        actual_hub_id = reg.get('hub_id', hub_id) if reg else hub_id
+        prov_queue = f"hub.{actual_hub_id}.config"
+        print(f" {BOLD}Provisioning:{RESET}   {GREEN}AUTOMATIC{RESET} (Queue: {prov_queue})")
         print(f" {BOLD}Service:{RESET}         {GREEN if svc_active == 'ACTIVE' else YELLOW}{svc_active}{RESET}")
         print(f" {BOLD}Database:{RESET}        {GREEN}HEALTHY{RESET} ({db.db_path})")
         print(f" {BOLD}Scheduler:{RESET}       {GREEN}ACTIVE{RESET}")
@@ -1631,8 +1634,22 @@ async def cmd_hub(args: argparse.Namespace) -> int:
                 print(f" {RED}[✗]{RESET} Sync failed: {exc}\n")
                 return 1
 
+            from core.config_sync_manager import ConfigSyncManager
+            from devices.auto_enrollment import AutoEnrollmentManager
+            from devices.device_registry import DeviceRegistry
+
+            dev_reg = DeviceRegistry(db)
+            auto_enr = AutoEnrollmentManager(db, dev_reg, reg_repo=reg_repo)
+            sync_mgr = ConfigSyncManager(
+                db=db,
+                reg_repo=reg_repo,
+                config_repo=cfg,
+                auto_enrollment=auto_enr,
+                expected_hub_id=reg.get("hub_id"),
+                expected_hub_uuid=reg.get("hub_uuid"),
+            )
             config_data["middleware_url"] = mid_url
-            await reg_repo.save_registration(config_data, actor="cli_sync")
+            sync_result = await sync_mgr.apply_configuration(config_data, actor="cli_sync")
             cfg_ver = config_data.get("config_version", 1)
             await client.acknowledge_config(config_version=cfg_ver)
 
@@ -1640,7 +1657,9 @@ async def cmd_hub(args: argparse.Namespace) -> int:
             print(f"     Hub ID:   {config_data.get('hub_id', reg.get('hub_id'))}")
             print(f"     Timezone: {config_data.get('timezone', reg.get('timezone'))}")
             devs = config_data.get("connected_devices") or []
-            print(f"     Devices:  {len(devs)} authorized device(s) registered.\n")
+            print(f"     Devices:  {len(devs)} authorized device(s) registered.")
+            bound_devs = sync_result.get("reconciled_devices", [])
+            print(f"     Hardware: {len(bound_devs)} USB device(s) automatically bound.\n")
             return 0
 
         else:

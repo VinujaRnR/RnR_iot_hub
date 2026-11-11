@@ -31,6 +31,7 @@ from devices.device_protocol import (
 from devices.serial_transport import SerialTransport
 from devices.usb_detector import USBDetector
 from devices.serial_worker import SerialWorker
+from devices.auto_enrollment import AutoEnrollmentManager, AutoEnrollmentReport
 
 __all__ = [
     "DeviceManager",
@@ -58,4 +59,6 @@ __all__ = [
     "parse_line",
     "USBDetector",
     "SerialWorker",
+    "AutoEnrollmentManager",
+    "AutoEnrollmentReport",
 ]
