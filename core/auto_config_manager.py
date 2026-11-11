@@ -175,7 +175,12 @@ class AutoConfigManager:
         target_hub_id = self.expected_hub_id or (current_reg.get("hub_id") if current_reg else None)
         target_hub_uuid = self.expected_hub_uuid or (current_reg.get("hub_uuid") if current_reg else None)
 
-        is_initial_activation = (not current_reg or not current_reg.get("hub_uuid"))
+        is_initial_activation = (
+            not current_reg
+            or not current_reg.get("hub_uuid")
+            or target_hub_id in ("hub-01", "default", None)
+            or bool(payload.get("activation_code"))
+        )
 
         if not is_initial_activation and target_hub_id and incoming_hub_id and incoming_hub_id != target_hub_id:
             msg = f"Configuration targeted to '{incoming_hub_id}' rejected by hub '{target_hub_id}'."

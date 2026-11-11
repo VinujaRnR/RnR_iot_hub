@@ -138,6 +138,9 @@ class RegistrationRepository:
             )
 
         # 2. Synchronize config_settings repository keys
+        await self.config_repo.set_setting("hub.uuid", hub_uuid, is_secret=False, actor=actor)
+        await self.config_repo.set_setting("hub.id", hub_id, is_secret=False, actor=actor)
+        await self.config_repo.set_setting("schedule.timezone", tz, is_secret=False, actor=actor)
         await self.config_repo.set_setting("registration.hub_uuid", hub_uuid, is_secret=False, actor=actor)
         await self.config_repo.set_setting("registration.hub_id", hub_id, is_secret=False, actor=actor)
         await self.config_repo.set_setting("registration.status", status, is_secret=False, actor=actor)

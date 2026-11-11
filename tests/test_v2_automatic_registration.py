@@ -571,3 +571,127 @@ async def test_v2_rabbitmq_activation_success_roundtrip(env_v2, section4_config_
     assert await cfg.get_setting("auth.activation_code") is None
 
 
+@pytest.mark.asyncio
+async def test_v2_apply_user_provided_registration_json(env_v2):
+    """Validates full processing of the user's exact production registration JSON from RabbitMQ."""
+    mgr = env_v2["manager"]
+    db = env_v2["db"]
+    cfg = env_v2["cfg"]
+    reg_repo = env_v2["reg_repo"]
+
+    payload = {
+        "message_type": "hub.config.snapshot",
+        "schema_version": 1,
+        "message_id": "msg-9f4a132e01b7",
+        "activation_code": "ACT-AFE6-3990-E204",
+        "hub_uuid": "45c7f53b-d615-41be-82b1-4f84608eba66",
+        "hub_id": "hub-45c7f53b",
+        "node_id": "3417ebc3b479",
+        "config_version": 1,
+        "issued_at": "2026-11-11T09:47:58.633816Z",
+        "hub_name": "Greenhouse Rack 1 Controller",
+        "hub_type": "raspberry_pi",
+        "installation_location": "Greenhouse Sector B - Rack 1",
+        "timezone": "Asia/Colombo",
+        "resource_id": 1,
+        "resource_name": "Cutting Machine 1",
+        "resource_type": "Machine",
+        "sub_resource_id": 20025,
+        "sub_resource_name": "Sub Cutter A",
+        "kit_type": "rnhub",
+        "registration_status": "REGISTERED",
+        "provisioning_status": "active",
+        "hub": {
+            "hub_uuid": "45c7f53b-d615-41be-82b1-4f84608eba66",
+            "hub_id": "hub-45c7f53b",
+            "hub_name": "Greenhouse Rack 1 Controller",
+            "hub_type": "raspberry_pi",
+            "installation_location": "Greenhouse Sector B - Rack 1",
+            "timezone": "Asia/Colombo",
+            "node_id": "3417ebc3b479",
+            "resource_id": 1,
+            "resource_name": "Cutting Machine 1",
+            "sub_resource_id": 20025,
+            "sub_resource_name": "Sub Cutter A",
+            "kit_type": "rnhub",
+            "registration_status": "REGISTERED",
+            "provisioning_status": "active",
+            "activation_code": "ACT-AFE6-3990-E204",
+        },
+        "devices": [
+            {
+                "device_uid": "dev-001",
+                "name": "Hydroponic Water Pump",
+                "mac": "00:11:22:33:44:55",
+                "type": "actuator",
+                "profile": "esp8266_relay_v1",
+                "approved": True,
+                "binding_status": "approved",
+                "last_reported_status": "unknown",
+                "configuration": {
+                    "channels": 1,
+                    "active_low": True,
+                    "safe_initial_state": "OFF",
+                },
+            },
+            {
+                "device_uid": "dev-002",
+                "name": "Rack Air Temp Sensor",
+                "mac": "00:11:22:33:44:66",
+                "type": "sensor",
+                "profile": "dht22_temp_sensor",
+                "approved": True,
+                "binding_status": "approved",
+                "last_reported_status": "unknown",
+                "configuration": {
+                    "pin": 4,
+                    "polling_interval_sec": 5,
+                },
+            },
+        ],
+    }
+
+    # Set pending activation code
+    await cfg.set_setting("auth.activation_code", "ACT-AFE6-3990-E204")
+
+    # Apply configuration snapshot
+    result = await mgr.apply_configuration(payload, actor="rabbitmq_registration")
+    assert result["status"] == "SUCCESS"
+    assert result["config_version"] == 1
+
+    # Verify hub_registration persistence
+    reg = await reg_repo.get_registration()
+    assert reg is not None
+    assert reg["hub_uuid"] == "45c7f53b-d615-41be-82b1-4f84608eba66"
+    assert reg["hub_id"] == "hub-45c7f53b"
+    assert reg["hub_name"] == "Greenhouse Rack 1 Controller"
+    assert reg["hub_type"] == "raspberry_pi"
+    assert reg["resource_id"] == 1
+    assert reg["sub_resource_id"] == 20025
+    assert reg["installation_location"] == "Greenhouse Sector B - Rack 1"
+    assert reg["timezone"] == "Asia/Colombo"
+    assert reg["config_version"] == 1
+
+    # Verify approved_devices table
+    conn = db.connection
+    async with conn.execute("SELECT device_uid, name, mac, profile, approved FROM approved_devices ORDER BY device_uid ASC") as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 2
+    assert rows[0]["device_uid"] == "dev-001"
+    assert rows[0]["name"] == "Hydroponic Water Pump"
+    assert rows[0]["mac"] == "00:11:22:33:44:55"
+    assert rows[0]["profile"] == "esp8266_relay_v1"
+    assert rows[0]["approved"] == 1
+
+    assert rows[1]["device_uid"] == "dev-002"
+    assert rows[1]["name"] == "Rack Air Temp Sensor"
+    assert rows[1]["mac"] == "00:11:22:33:44:66"
+    assert rows[1]["profile"] == "dht22_temp_sensor"
+    assert rows[1]["approved"] == 1
+
+    # Verify config_settings synced
+    assert await cfg.get_setting("hub.id") == "hub-45c7f53b"
+    assert await cfg.get_setting("hub.uuid") == "45c7f53b-d615-41be-82b1-4f84608eba66"
+    assert await cfg.get_setting("schedule.timezone") == "Asia/Colombo"
+
+

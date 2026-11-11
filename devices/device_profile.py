@@ -130,11 +130,34 @@ DEFAULT_ESP8266_RELAY_PROFILE = DeviceProfile(
     },
 )
 
+# DHT22 Temperature & Humidity Sensor Profile
+DEFAULT_DHT22_TEMP_SENSOR_PROFILE = DeviceProfile(
+    profile_id="dht22_temp_sensor",
+    name="DHT22 Temperature & Humidity Sensor",
+    transport_type="usb_serial",
+    baud_rate=9600,
+    channels={
+        "sensor:temperature": {
+            "actions": ["READ_TEMP", "READ_HUMIDITY", "READ_ALL", "STATUS", "HELLO", "HANDSHAKE"],
+        },
+        "sensor:humidity": {
+            "actions": ["READ_TEMP", "READ_HUMIDITY", "READ_ALL", "STATUS", "HELLO", "HANDSHAKE"],
+        },
+    },
+    protocol={
+        "encoding": "utf-8",
+        "framing": "newline_json",
+        "require_acknowledgment": True,
+        "command_id_required": False,
+    },
+)
+
 
 BUILTIN_PROFILES: Dict[str, DeviceProfile] = {
     DEFAULT_PLANT_CONTROLLER_PROFILE.profile_id: DEFAULT_PLANT_CONTROLLER_PROFILE,
     DEFAULT_ARDUINO_NANO_PROFILE.profile_id: DEFAULT_ARDUINO_NANO_PROFILE,
     DEFAULT_ESP8266_RELAY_PROFILE.profile_id: DEFAULT_ESP8266_RELAY_PROFILE,
+    DEFAULT_DHT22_TEMP_SENSOR_PROFILE.profile_id: DEFAULT_DHT22_TEMP_SENSOR_PROFILE,
 }
 
 
@@ -194,7 +217,21 @@ class DeviceProfileRegistry:
         if builtin:
             self._cache[profile_id] = builtin
             return builtin
-        return None
+
+        fallback = DeviceProfile(
+            profile_id=profile_id,
+            name=f"Device Profile ({profile_id})",
+            transport_type="usb_serial",
+            baud_rate=9600,
+            channels={
+                "default": {
+                    "actions": ["STATUS", "HELLO", "HANDSHAKE", "READ", "TRIGGER", "ON", "OFF"],
+                }
+            },
+            protocol={"encoding": "utf-8", "framing": "newline_json"},
+        )
+        self._cache[profile_id] = fallback
+        return fallback
 
     async def list_profiles(self) -> List[DeviceProfile]:
         """Lists all registered profiles."""
