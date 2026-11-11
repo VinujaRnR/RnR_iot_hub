@@ -15,9 +15,12 @@ cp -r "$SRC_DIR/storage" "$TARGET_DIR/"
 cp -r "$SRC_DIR/core" "$TARGET_DIR/"
 cp -r "$SRC_DIR/devices" "$TARGET_DIR/"
 cp -r "$SRC_DIR/scheduler" "$TARGET_DIR/"
+cp -r "$SRC_DIR/supervisor" "$TARGET_DIR/"
 cp "$SRC_DIR/main.py" "$TARGET_DIR/"
 cp "$SRC_DIR/config.py" "$TARGET_DIR/"
-chown -R iothub:iothub "$TARGET_DIR/ingestion" "$TARGET_DIR/storage" "$TARGET_DIR/core" "$TARGET_DIR/devices" "$TARGET_DIR/scheduler" "$TARGET_DIR/main.py" "$TARGET_DIR/config.py"
+cp "$SRC_DIR/iothubctl.py" "$TARGET_DIR/"
+cp "$SRC_DIR/install.py" "$TARGET_DIR/"
+chown -R iothub:iothub "$TARGET_DIR/ingestion" "$TARGET_DIR/storage" "$TARGET_DIR/core" "$TARGET_DIR/devices" "$TARGET_DIR/scheduler" "$TARGET_DIR/supervisor" "$TARGET_DIR/main.py" "$TARGET_DIR/config.py" "$TARGET_DIR/iothubctl.py" "$TARGET_DIR/install.py"
 
 echo "Restarting iothubd systemd service..."
 systemctl restart iothubd

@@ -47,6 +47,8 @@ RESET = "\033[0m"
 from config import (
     DATABASE_PATH,
     HUB_ID,
+    HUB_UUID,
+    MIDDLEWARE_URL,
     API_HOST,
     API_PORT,
     COMMAND_EXCHANGE,
@@ -58,10 +60,22 @@ from storage.config_repository import ConfigRepository
 from storage.schedule_repository import ScheduleRepository
 from storage.event_outbox import EventOutbox
 from storage.backup_manager import BackupManager
+from storage.registration_repository import RegistrationRepository
 from devices.device_registry import DeviceRegistry
 from devices.device_profile import DeviceProfileRegistry
 from scheduler.schedule_policies import SchedulePolicyManager
 from core.crypto import CryptoManager
+from core.registration_client import (
+    RegistrationClient,
+    RegistrationError,
+    ActivationError,
+    InvalidActivationCodeError,
+    DuplicateClaimError,
+    RegistrationOfflineError,
+    HubSuspendedError,
+    DeviceAuthorizationError,
+)
+from core.registration_guard import RegistrationGuard, HubOperatingState
 
 
 def get_db(db_path: Optional[str] = None) -> DatabaseManager:
@@ -85,6 +99,10 @@ async def cmd_status(args: argparse.Namespace) -> int:
         schedules = await repo.list_schedules(status="ACTIVE")
         bindings = await registry.list_bindings()
         pending_outbox = await outbox.get_pending()
+        reg_repo = RegistrationRepository(db, cfg)
+        reg = await reg_repo.get_registration()
+        guard = RegistrationGuard(reg_repo)
+        op_state = await guard.get_operating_state()
 
         # Check systemd status
         svc_active = "UNKNOWN"
@@ -105,7 +123,19 @@ async def cmd_status(args: argparse.Namespace) -> int:
 
         print(f"\n{BOLD}{CYAN}iothubd — System Status{RESET}")
         print(f"{'='*50}")
-        print(f" {BOLD}Hub ID:{RESET}          {hub_id}")
+        if reg:
+            print(f" {BOLD}Hub ID:{RESET}          {reg.get('hub_id', hub_id)}")
+            print(f" {BOLD}Hub UUID:{RESET}        {reg.get('hub_uuid', 'N/A')}")
+            st_color = GREEN if op_state == HubOperatingState.ACTIVATED else (RED if op_state in (HubOperatingState.SUSPENDED, HubOperatingState.RETIRED) else YELLOW)
+            print(f" {BOLD}Registration:{RESET}    {st_color}{op_state}{RESET} (Config v{reg.get('config_version', 1)})")
+            if reg.get('resource_id') or reg.get('sub_resource_id'):
+                print(f" {BOLD}Resource Map:{RESET}    Parent #{reg.get('resource_id')} / Sub #{reg.get('sub_resource_id')}")
+            if reg.get('lease_expires_at'):
+                lease_color = GREEN if await reg_repo.is_lease_valid() else RED
+                print(f" {BOLD}Lease Expiry:{RESET}    {lease_color}{reg.get('lease_expires_at')}{RESET}")
+        else:
+            print(f" {BOLD}Hub ID:{RESET}          {hub_id}")
+            print(f" {BOLD}Registration:{RESET}    {YELLOW}[!] UNREGISTERED — Run 'sudo iothubctl hub activate'{RESET}")
         print(f" {BOLD}Service:{RESET}         {GREEN if svc_active == 'ACTIVE' else YELLOW}{svc_active}{RESET}")
         print(f" {BOLD}Database:{RESET}        {GREEN}HEALTHY{RESET} ({db.db_path})")
         print(f" {BOLD}Scheduler:{RESET}       {GREEN}ACTIVE{RESET}")
@@ -670,11 +700,72 @@ async def cmd_devices(args: argparse.Namespace) -> int:
             print()
             return 0
 
+        elif sub == "approved":
+            reg_repo = RegistrationRepository(db)
+            auth_devices = await reg_repo.get_authorized_devices()
+            print(f"\n{BOLD}{CYAN}iothubd — Middleware Approved Device Inventory{RESET}")
+            print(f"{'='*80}")
+            if not auth_devices:
+                print(f"  {YELLOW}No approved devices found in local inventory snapshot.{RESET}")
+                print(f"  {DIM}Run 'sudo iothubctl hub sync' to fetch authorized devices from Django.{RESET}\n")
+                return 0
+
+            print(f"  {'REG ID':<12} {'NAME':<24} {'PROFILE':<22} {'ASSIGNED MAC':<16} {'STATUS'}")
+            print(f"  {'-'*12} {'-'*24} {'-'*22} {'-'*16} {'-'*16}")
+            for d in auth_devices:
+                st = d.get("status", "pending_binding")
+                st_color = GREEN if st == "approved" else (YELLOW if st == "pending_approval" else DIM)
+                mac_disp = d.get("device_mac") or "-"
+                print(f"  {d['registration_device_id']:<12} {d['name']:<24} {d['profile']:<22} {mac_disp:<16} {st_color}{st}{RESET}")
+            print()
+            return 0
+
         elif sub == "enroll":
-            mac = args.mac
-            name = args.name
-            port = args.port or "/dev/ttyUSB0"
-            profile = args.profile or "plant_controller_v1"
+            mac = getattr(args, "mac", None)
+            name = getattr(args, "name", None)
+            port = getattr(args, "port", None) or "/dev/ttyUSB0"
+            profile = getattr(args, "profile", None) or "plant_controller_v1"
+            reg_dev_id = getattr(args, "registration_device_id", None)
+
+            reg_repo = RegistrationRepository(db)
+            cfg = ConfigRepository(db)
+            reg = await reg_repo.get_registration()
+
+            is_approved = True
+            if reg_dev_id:
+                auth_dev = await reg_repo.get_authorized_device(reg_dev_id)
+                if auth_dev:
+                    name = name or auth_dev.get("name")
+                    profile = profile or auth_dev.get("profile")
+
+                if reg and reg.get("hub_uuid"):
+                    try:
+                        api_token = await cfg.get_setting("auth.token") or reg.get("api_token")
+                        mid_url = reg.get("middleware_url") or MIDDLEWARE_URL
+                        client = RegistrationClient(
+                            middleware_url=mid_url,
+                            hub_uuid=reg["hub_uuid"],
+                            api_token=api_token,
+                            verify_ssl=False,
+                        )
+                        auth_res = await client.authorize_device(
+                            registration_device_id=reg_dev_id,
+                            device_mac=mac or "",
+                            port=port,
+                            profile=profile,
+                        )
+                        st = auth_res.get("status", "approved")
+                        is_approved = (st == "approved")
+                        await reg_repo.update_device_authorization(
+                            registration_device_id=reg_dev_id,
+                            device_mac=mac,
+                            status=st,
+                            bound_port=port,
+                        )
+                        if not is_approved:
+                            print(f" {YELLOW}[!]{RESET} Hardware binding entered pending approval state in Django middleware.")
+                    except Exception as exc:
+                        logger.debug("Middleware device authorization offline/deferred: %s", exc)
 
             if not mac:
                 mac = input("Enter device MAC (e.g. 98a316e6b658): ").strip()
@@ -686,6 +777,7 @@ async def cmd_devices(args: argparse.Namespace) -> int:
                 device_name=name,
                 port_hint=port,
                 profile_id=profile,
+                approved=is_approved,
             )
             print(f"\n{GREEN}[✓]{RESET} Device '{binding.device_mac}' ({binding.device_name}) successfully enrolled on {binding.port_hint}.\n")
             return 0
@@ -1426,6 +1518,139 @@ async def cmd_action_status(args: argparse.Namespace) -> int:
 
 
 # =====================================================================
+# Command: iothubctl hub (registration-status, activate, sync)
+# =====================================================================
+async def cmd_hub(args: argparse.Namespace) -> int:
+    db = get_db(args.db)
+    await db.connect()
+    try:
+        reg_repo = RegistrationRepository(db)
+        cfg = ConfigRepository(db)
+        sub = getattr(args, "hub_action", None)
+
+        if sub in ("registration-status", "status"):
+            reg = await reg_repo.get_registration()
+            print(f"\n{BOLD}{CYAN}RN Solutions — Hub Registration Status{RESET}")
+            print(f"{'='*55}")
+            if not reg:
+                print(f"  {BOLD}Status:{RESET}           {YELLOW}UNREGISTERED{RESET}")
+                print(f"  {DIM}Hub has not been activated against Django middleware.{RESET}")
+                print(f"  {DIM}Run 'sudo iothubctl hub activate' with your activation code.{RESET}\n")
+                return 0
+
+            guard = RegistrationGuard(reg_repo)
+            op_state = await guard.get_operating_state()
+            st_color = GREEN if op_state == HubOperatingState.ACTIVATED else (RED if op_state in (HubOperatingState.SUSPENDED, HubOperatingState.RETIRED) else YELLOW)
+
+            is_valid_lease = await reg_repo.is_lease_valid()
+            lease_color = GREEN if is_valid_lease else RED
+            lease_disp = f"{reg.get('lease_expires_at')} ({'VALID' if is_valid_lease else 'EXPIRED'})" if reg.get('lease_expires_at') else "NONE"
+
+            print(f"  {BOLD}Status:{RESET}           {st_color}{op_state}{RESET}")
+            print(f"  {BOLD}Hub UUID:{RESET}         {reg.get('hub_uuid', '-')}")
+            print(f"  {BOLD}Hub ID:{RESET}           {reg.get('hub_id', '-')}")
+            print(f"  {BOLD}Hub Name:{RESET}         {reg.get('hub_name', '-')}")
+            print(f"  {BOLD}Hub Type:{RESET}         {reg.get('hub_type', 'mini_pc')}")
+            print(f"  {BOLD}Resource ID:{RESET}      {reg.get('resource_id') or '-'}")
+            print(f"  {BOLD}Sub-Resource ID:{RESET}  {reg.get('sub_resource_id') or '-'}")
+            print(f"  {BOLD}Location:{RESET}         {reg.get('installation_location') or '-'}")
+            print(f"  {BOLD}Timezone:{RESET}         {reg.get('timezone', 'UTC')}")
+            print(f"  {BOLD}Config Version:{RESET}   {reg.get('config_version', 0)}")
+            print(f"  {BOLD}Verified At:{RESET}      {reg.get('verified_at') or '-'}")
+            print(f"  {BOLD}Lease Expires At:{RESET} {lease_color}{lease_disp}{RESET}")
+            print(f"  {BOLD}Middleware URL:{RESET}   {reg.get('middleware_url') or '-'}")
+            print()
+            return 0
+
+        elif sub == "activate":
+            act_code = getattr(args, "activation_code", None)
+            if not act_code:
+                try:
+                    act_code = getpass.getpass("Enter Hub Activation Code: ").strip()
+                except Exception:
+                    pass
+
+            if not act_code:
+                print(f"{RED}Error: Activation code is required.{RESET}")
+                return 1
+
+            mid_url = getattr(args, "middleware_url", None) or await cfg.get_setting("middleware.url", MIDDLEWARE_URL)
+            print(f"\n{BOLD}{CYAN}RN Solutions — RNHub Setup{RESET}")
+            print(f"Middleware URL: {mid_url}")
+            print(f"\n{BOLD}Connecting to RN Solutions middleware...{RESET}")
+
+            client = RegistrationClient(middleware_url=mid_url, verify_ssl=False)
+            try:
+                data = await client.activate(activation_code=act_code)
+            except Exception as exc:
+                print(f" {RED}[✗]{RESET} Activation failed: {exc}\n")
+                return 1
+
+            print(f" {GREEN}[PASS]{RESET} Activation credential validated")
+            print(f" {GREEN}[PASS]{RESET} Registered hub found")
+            print(f" {GREEN}[PASS]{RESET} Hub identity verified\n")
+
+            hub_name = data.get("hub_name", "RNHub")
+            hub_id = data.get("hub_id", "hub-01")
+            res_id = data.get("resource_id", "N/A")
+            loc = data.get("installation_location", "Main Site")
+            tz = data.get("timezone", "Asia/Colombo")
+
+            print(f"{BOLD}Hub Name    : {hub_name}{RESET}")
+            print(f"{BOLD}Hub ID      : {hub_id}{RESET}")
+            print(f"{BOLD}Resource    : {res_id}{RESET}")
+            print(f"{BOLD}Location    : {loc}{RESET}")
+            print(f"{BOLD}Timezone    : {tz}{RESET}\n")
+
+            data["middleware_url"] = mid_url
+            await reg_repo.save_registration(data, actor="cli_activate")
+            print(f" {GREEN}[PASS]{RESET} Configuration saved securely")
+            print(f" {GREEN}[PASS]{RESET} Registration activated\n")
+            print(f"{GREEN}Hub installation completed.{RESET}\n")
+            return 0
+
+        elif sub == "sync":
+            reg = await reg_repo.get_registration()
+            if not reg or not reg.get("hub_uuid"):
+                print(f"{RED}Error: Hub is not activated. Run 'sudo iothubctl hub activate' first.{RESET}")
+                return 1
+
+            mid_url = getattr(args, "middleware_url", None) or reg.get("middleware_url") or MIDDLEWARE_URL
+            api_token = await cfg.get_setting("auth.token") or reg.get("api_token")
+
+            print(f"\n{BOLD}{CYAN}Synchronizing configuration from Django middleware ({mid_url})...{RESET}")
+            client = RegistrationClient(
+                middleware_url=mid_url,
+                hub_uuid=reg["hub_uuid"],
+                api_token=api_token,
+                verify_ssl=False,
+            )
+            try:
+                config_data = await client.get_configuration()
+            except Exception as exc:
+                print(f" {RED}[✗]{RESET} Sync failed: {exc}\n")
+                return 1
+
+            config_data["middleware_url"] = mid_url
+            await reg_repo.save_registration(config_data, actor="cli_sync")
+            cfg_ver = config_data.get("config_version", 1)
+            await client.acknowledge_config(config_version=cfg_ver)
+
+            print(f" {GREEN}[✓]{RESET} Configuration synchronized (version {cfg_ver}).")
+            print(f"     Hub ID:   {config_data.get('hub_id', reg.get('hub_id'))}")
+            print(f"     Timezone: {config_data.get('timezone', reg.get('timezone'))}")
+            devs = config_data.get("connected_devices") or []
+            print(f"     Devices:  {len(devs)} authorized device(s) registered.\n")
+            return 0
+
+        else:
+            print("Invalid hub action. Choose: registration-status, activate, sync.")
+            return 1
+    finally:
+        await db.close()
+
+
+# =====================================================================
 # Main Parser Construction
 # =====================================================================
 def build_parser() -> argparse.ArgumentParser:
@@ -1438,6 +1663,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     # status
     subparsers.add_parser("status", help="Display overall hub status")
+
+    # hub (V2 Middleware-Integrated Hub Registration)
+    hub_parser = subparsers.add_parser("hub", help="Manage middleware hub registration, activation, and synchronization")
+    hub_subs = hub_parser.add_subparsers(dest="hub_action", required=True)
+    hub_subs.add_parser("registration-status", aliases=["status"], help="Display authoritative registration state and lease")
+    act_p = hub_subs.add_parser("activate", help="Claim and activate registered hub using activation code")
+    act_p.add_argument("--activation-code", "-c", default=None, help="One-time activation code from Django")
+    act_p.add_argument("--middleware-url", "-m", default=None, help="Base URL of Django middleware")
+    sync_p = hub_subs.add_parser("sync", help="Synchronize configuration and authorized devices from Django")
+    sync_p.add_argument("--middleware-url", "-m", default=None, help="Base URL of Django middleware")
 
     # doctor
     subparsers.add_parser("doctor", help="Run comprehensive health diagnostics")
@@ -1460,7 +1695,9 @@ def build_parser() -> argparse.ArgumentParser:
     dev_subs.add_parser("scan", help="Scan USB serial ports")
     dev_subs.add_parser("autoconfigure", help="Automatically scan USB serial ports and configure logical devices")
     dev_subs.add_parser("list", help="List enrolled devices")
+    dev_subs.add_parser("approved", help="List middleware-approved device inventory")
     enr_p = dev_subs.add_parser("enroll", help="Enroll a USB IoT device")
+    enr_p.add_argument("--registration-device-id", "--reg-id", default=None, help="Assigned middleware registration device ID (e.g. dev-001)")
     enr_p.add_argument("--mac", help="Device MAC identity")
     enr_p.add_argument("--name", help="Friendly name")
     enr_p.add_argument("--port", default="/dev/ttyUSB0", help="Port hint")
@@ -1645,6 +1882,7 @@ def main():
 
     handlers = {
         "status": cmd_status,
+        "hub": cmd_hub,
         "doctor": cmd_doctor,
         "rabbitmq": cmd_rabbitmq,
         "schedules": cmd_schedules,

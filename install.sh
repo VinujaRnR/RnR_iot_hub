@@ -65,6 +65,8 @@ WIZARD=true
 UNINSTALL=false
 PURGE=false
 ASSUME_YES=false
+ACTIVATION_CODE=""
+MIDDLEWARE_URL=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -74,6 +76,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --ref)
             GIT_REF="$2"
+            shift 2
+            ;;
+        --activation-code)
+            ACTIVATION_CODE="$2"
+            shift 2
+            ;;
+        --middleware-url)
+            MIDDLEWARE_URL="$2"
             shift 2
             ;;
         --dry-run)
@@ -220,6 +230,12 @@ if [ "$DRY_RUN" = true ]; then
 fi
 if [ "$WIZARD" = true ]; then
     INSTALL_ARGS+=("--wizard")
+fi
+if [ -n "$ACTIVATION_CODE" ]; then
+    INSTALL_ARGS+=("--activation-code" "$ACTIVATION_CODE")
+fi
+if [ -n "$MIDDLEWARE_URL" ]; then
+    INSTALL_ARGS+=("--middleware-url" "$MIDDLEWARE_URL")
 fi
 INSTALL_ARGS+=("--cwd" "$CALLER_PWD")
 

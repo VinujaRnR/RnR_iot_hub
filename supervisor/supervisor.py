@@ -60,6 +60,10 @@ class HubSupervisor:
         max_consecutive_failures: int = 3,
         backlog_threshold: int = 50,
         missed_schedule_grace_seconds: int = 300,
+        registration_client: Optional[Any] = None,
+        registration_guard: Optional[Any] = None,
+        reg_repo: Optional[Any] = None,
+        heartbeat_interval: float = 60.0,
     ):
         self.check_interval = check_interval
         self.db = db
@@ -69,6 +73,11 @@ class HubSupervisor:
         self.outbox = outbox
         self.consumer = consumer
         self.publisher = publisher
+        self.registration_client = registration_client
+        self.registration_guard = registration_guard
+        self.reg_repo = reg_repo
+        self.heartbeat_interval = heartbeat_interval
+        self._last_heartbeat_time: float = 0.0
 
         self.max_consecutive_failures = max_consecutive_failures
         self.backlog_threshold = backlog_threshold
@@ -237,10 +246,58 @@ class HubSupervisor:
                 # 7. Pending Result Backlog & Backpressure
                 await self.check_outbox_backlog()
 
+                # 8. Middleware Registration Health & Heartbeat (RNHub V2)
+                await self.check_registration_health()
+
             except Exception as exc:
                 logger.error("Error in supervision check loop: %s", exc, exc_info=True)
 
             await asyncio.sleep(self.check_interval)
+
+    async def check_registration_health(self) -> None:
+        """
+        RNHub V2: Evaluates middleware registration state, lease expiration,
+        and synchronizes heartbeats / configuration revisions with Django.
+        """
+        if self.registration_guard:
+            state = await self.registration_guard.get_operating_state()
+            if state == "LEASE_EXPIRED":
+                self.emit_alert("CRITICAL", "Operating authorization lease expired. Actuation blocked.")
+            elif state in ("SUSPENDED", "RETIRED"):
+                self.emit_alert("CRITICAL", f"Hub operations {state} by Django middleware.")
+
+        # Heartbeat check
+        now = time.time()
+        if self.registration_client and (now - self._last_heartbeat_time >= self.heartbeat_interval):
+            self._last_heartbeat_time = now
+            try:
+                metrics = self.get_system_metrics()
+                hb_res = await self.registration_client.send_heartbeat(status_data={
+                    "status": metrics.get("status", "ONLINE"),
+                    "uptime_seconds": int(now - self.start_time),
+                })
+                # Check status returned
+                remote_status = hb_res.get("status", "active")
+                if remote_status in ("suspended", "retired") and self.reg_repo:
+                    await self.reg_repo.update_status(remote_status, actor="middleware_heartbeat")
+                    self.emit_alert("CRITICAL", f"Hub revoked by middleware (status: {remote_status}).")
+
+                # Check lease update
+                if hb_res.get("lease_expires_at") and self.reg_repo:
+                    await self.reg_repo.update_lease(hb_res["lease_expires_at"], actor="middleware_heartbeat")
+
+                # Check for config version change
+                remote_cfg_ver = hb_res.get("config_version")
+                if self.reg_repo and remote_cfg_ver is not None:
+                    local_reg = await self.reg_repo.get_registration()
+                    local_ver = int(local_reg.get("config_version", 1)) if local_reg else 0
+                    if remote_cfg_ver > local_ver:
+                        logger.info("Newer configuration revision v%d detected from middleware (local: v%d). Synchronizing...", remote_cfg_ver, local_ver)
+                        new_cfg = await self.registration_client.get_configuration()
+                        await self.reg_repo.save_registration(new_cfg, actor="supervisor_sync")
+                        await self.registration_client.acknowledge_config(remote_cfg_ver)
+            except Exception as exc:
+                logger.debug("Middleware heartbeat notice: %s", exc)
 
     # Rule 1 & 9: System Clock Validation (Blocks unsafe timed execution)
     async def check_system_clock(self) -> bool:

@@ -49,7 +49,9 @@ from scheduler.scheduler import TaskScheduler
 from scheduler.action_dispatcher import ActionDispatcher
 from scheduler.schedule_engine import ScheduleEngine
 from scheduler.state_reconciler import StateReconciler
-from storage import DatabaseManager, ScheduleRepository, EventOutbox
+from storage import DatabaseManager, ScheduleRepository, EventOutbox, RegistrationRepository, ConfigRepository
+from core.registration_client import RegistrationClient
+from core.registration_guard import RegistrationGuard, HubOperatingState
 from supervisor.supervisor import HubSupervisor
 
 logger = logging.getLogger("iothub")
@@ -105,12 +107,23 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
     await db.connect()
     schedule_repo = ScheduleRepository(db)
     event_outbox = EventOutbox(db)
+    reg_repo = RegistrationRepository(db)
+    guard = RegistrationGuard(reg_repo, lease_grace_hours=settings.OFFLINE_LEASE_GRACE_HOURS)
     logger.info("[INIT] SQLite storage ready (WAL mode verified).")
+
+    # Registration & Activation check (RNHub V2)
+    reg_snapshot = await reg_repo.get_registration()
+    op_state = await guard.get_operating_state()
+    is_auth, auth_reason = await guard.check_hub_authorized()
+    logger.info("[SECURITY] Hub Operating State: %s (%s)", op_state, auth_reason)
+    if not is_auth:
+        logger.warning("[SECURITY] Production operations restricted until registration activation: %s", auth_reason)
 
     # 3. Initialize USB Device Manager (Blocking serial I/O managed by worker threads)
     logger.info("[INIT] Initializing USB Device Manager...")
     device_manager = create_default_device_manager()
-    router = CommandRouter(hub_id=HUB_ID, device_manager=device_manager)
+    device_manager.registration_guard = guard
+    router = CommandRouter(hub_id=HUB_ID, device_manager=device_manager, registration_guard=guard)
 
     # Persist registered devices in database
     for dev_id in device_manager.list_devices():
@@ -206,6 +219,17 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
 
     # 7. Initialize HubSupervisor (Recovery rules, device quarantining, clock & watchdog)
     logger.info("[INIT] Starting HubSupervisor monitoring daemon...")
+    reg_client = None
+    if reg_snapshot and reg_snapshot.get("hub_uuid"):
+        api_tok = await reg_repo.config_repo.get_setting("auth.token") or reg_snapshot.get("api_token")
+        reg_client = RegistrationClient(
+            middleware_url=reg_snapshot.get("middleware_url") or settings.MIDDLEWARE_URL,
+            hub_uuid=reg_snapshot.get("hub_uuid"),
+            api_token=api_tok,
+            verify_ssl=settings.MIDDLEWARE_VERIFY_SSL,
+            timeout=settings.MIDDLEWARE_TIMEOUT_SECONDS,
+        )
+
     supervisor = HubSupervisor(
         check_interval=15.0,
         db=db,
@@ -214,6 +238,9 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
         schedule_engine=schedule_engine,
         outbox=event_outbox,
         publisher=publisher,
+        registration_client=reg_client,
+        registration_guard=guard,
+        reg_repo=reg_repo,
     )
     dispatcher.supervisor = supervisor
     schedule_engine.supervisor = supervisor
@@ -227,6 +254,7 @@ async def run_hub(stop_override_event: Optional[asyncio.Event] = None):
         schedule_repo=schedule_repo,
         publisher=publisher,
         schedule_engine=schedule_engine,
+        registration_guard=guard,
     )
     supervisor.consumer = consumer
 

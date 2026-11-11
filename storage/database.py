@@ -353,6 +353,56 @@ class DatabaseManager:
             """
         )
         await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_action_status_updated ON action_status(updated_at);")
+
+        # 13. Hub Registration table (V2 Middleware-Integrated Hub Registration)
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hub_registration (
+                hub_uuid TEXT PRIMARY KEY,
+                hub_id TEXT NOT NULL,
+                hub_name TEXT NOT NULL,
+                hub_type TEXT DEFAULT 'mini_pc',
+                status TEXT NOT NULL DEFAULT 'unregistered',
+                resource_id INTEGER,
+                sub_resource_id INTEGER,
+                installation_location TEXT,
+                timezone TEXT NOT NULL DEFAULT 'UTC',
+                config_version INTEGER DEFAULT 0,
+                lease_expires_at TEXT,
+                verified_at TEXT NOT NULL,
+                api_token TEXT,
+                middleware_url TEXT,
+                raw_config_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+        # 14. Authorized Devices table (Middleware-approved device inventory)
+        await self._conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS authorized_devices (
+                registration_device_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                device_mac TEXT,
+                profile TEXT,
+                status TEXT NOT NULL DEFAULT 'pending_binding',
+                bound_port TEXT,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        await self._conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_dev_mac ON authorized_devices(device_mac);")
+
+        # Migration: Add registration_device_id to device_bindings if not present
+        try:
+            async with self._conn.execute("PRAGMA table_info(device_bindings)") as cur:
+                cols = {row[1] for row in await cur.fetchall()}
+            if "registration_device_id" not in cols:
+                await self._conn.execute("ALTER TABLE device_bindings ADD COLUMN registration_device_id TEXT;")
+        except Exception as exc:
+            logger.debug("device_bindings migration skipped: %s", exc)
+
         await self._conn.commit()
 
     # Device repository methods

@@ -124,6 +124,9 @@ class IoTInstaller:
         dry_run: bool = False,
         wizard: bool = False,
         cwd: str = "",
+        activation_code: Optional[str] = None,
+        middleware_url: Optional[str] = None,
+        offline: bool = False,
     ):
         self.destdir = Path(destdir).resolve() if destdir else None
         self.no_start = no_start
@@ -132,6 +135,10 @@ class IoTInstaller:
         self.wizard = wizard
         self.caller_dir = Path(cwd).resolve() if cwd else Path.cwd()
         self.source_dir = Path(__file__).resolve().parent
+        self.activation_code = activation_code
+        self.middleware_url = middleware_url or os.environ.get("MIDDLEWARE_URL", "https://api.example.com")
+        self.offline = offline
+        self.registration_data: Optional[dict] = None
         self.config_vars: dict = {}
 
         # Target installation paths (prefixed by destdir if supplied)
@@ -419,15 +426,16 @@ class IoTInstaller:
         log_step("Resolving configuration parameters & credentials")
         defaults = {
             "HUB_ID": "hub-01",
-            "SCHEDULE_TIMEZONE": "Asia/Kolkata",
+            "SCHEDULE_TIMEZONE": "Asia/Colombo",
             "DATABASE_PATH": str(self.var_dir / "iothub.db"),
             "API_HOST": "127.0.0.1",
             "API_PORT": "8765",
             "LOG_LEVEL": "INFO",
-            "RABBITMQ_HOST": "47.236.59.210",
+            "MIDDLEWARE_URL": self.middleware_url,
+            "RABBITMQ_HOST": "localhost",
             "RABBITMQ_AMQP_PORT": "5672",
-            "RABBITMQ_USER": "rnr_iot_user",
-            "RABBITMQ_PASSWORD": "rnr_iot_2025!",
+            "RABBITMQ_USER": "guest",
+            "RABBITMQ_PASSWORD": "",
             "RABBITMQ_VHOST": "/",
             "RABBITMQ_USE_SSL": "false",
             "RABBITMQ_PREFETCH": "10",
@@ -471,10 +479,14 @@ class IoTInstaller:
         self.config_vars["DATABASE_PATH"] = "/var/lib/iothub/iothub.db"
 
     def run_configuration_wizard(self):
-        """Interactive terminal configuration wizard for iothubd."""
+        """Interactive terminal configuration wizard for iothubd V2."""
         print(f"\n{BOLD}{CYAN}------------------------------------------------------------------------{RESET}")
-        print(f"{BOLD}{CYAN} iothubd Configuration Wizard                                           {RESET}")
+        print(f"{BOLD}{CYAN} RN Solutions — RNHub Setup                                             {RESET}")
         print(f"{BOLD}{CYAN}------------------------------------------------------------------------{RESET}")
+
+        if self.offline:
+            log_ok("Offline mode selected: skipping middleware activation.")
+            return
 
         # If stdin is not a tty (e.g. piped via curl | bash), attempt to reconnect to /dev/tty
         if not sys.stdin.isatty():
@@ -484,43 +496,78 @@ class IoTInstaller:
             except Exception:
                 pass
 
-        if not sys.stdin.isatty():
-            log_ok("Non-interactive mode detected. Preserving loaded/default configuration.")
-            return
-
         try:
             import getpass
-            print(f" {BOLD}Press Enter to keep existing [defaults] or type new value:{RESET}\n")
 
-            cur_hub = self.config_vars.get("HUB_ID", "hub-01")
-            cur_host = self.config_vars.get("RABBITMQ_HOST", "47.236.59.210")
-            cur_port = self.config_vars.get("RABBITMQ_AMQP_PORT", "5672")
-            cur_user = self.config_vars.get("RABBITMQ_USER", "rnr_iot_user")
-            cur_pass = self.config_vars.get("RABBITMQ_PASSWORD", "rnr_iot_2025!")
-            cur_tz = self.config_vars.get("SCHEDULE_TIMEZONE", "Asia/Kolkata")
+            # 1. Middleware URL
+            cur_url = self.middleware_url or self.config_vars.get("MIDDLEWARE_URL", "https://api.example.com")
+            if sys.stdin.isatty() and not self.middleware_url:
+                mid_url = input(f"\nMiddleware URL:\n[{cur_url}]: ").strip() or cur_url
+            else:
+                mid_url = cur_url
+            self.middleware_url = mid_url
+            self.config_vars["MIDDLEWARE_URL"] = mid_url
 
-            hub_id = input(f" [1] Hub ID [{cur_hub}]: ").strip() or cur_hub
-            rmq_host = input(f" [2] RabbitMQ Host [{cur_host}]: ").strip() or cur_host
-            rmq_port = input(f" [3] RabbitMQ Port [{cur_port}]: ").strip() or cur_port
-            rmq_user = input(f" [4] RabbitMQ Username [{cur_user}]: ").strip() or cur_user
+            # 2. Activation Code
+            act_code = self.activation_code
+            if not act_code and sys.stdin.isatty():
+                act_code = getpass.getpass("\nEnter Hub Activation Code:\n").strip()
 
-            masked_hint = "*" * min(len(cur_pass), 8) if cur_pass else "none"
-            rmq_pass = getpass.getpass(f" [5] RabbitMQ Password [{masked_hint}]: ").strip() or cur_pass
-            tz = input(f" [6] Schedule Timezone [{cur_tz}]: ").strip() or cur_tz
+            if not act_code:
+                if not sys.stdin.isatty():
+                    log_ok("Non-interactive mode without activation code. Preserving loaded/default configuration.")
+                    return
+                log_warn("No activation code entered. Running in offline/unregistered mode.")
+                return
+
+            print(f"\n{BOLD}Connecting to RN Solutions middleware...{RESET}")
+            sys.path.insert(0, str(self.source_dir))
+            sys.path.insert(0, str(self.opt_dir))
+            from core.registration_client import RegistrationClient
+
+            client = RegistrationClient(middleware_url=mid_url, verify_ssl=False)
+            data = client.activate_sync(activation_code=act_code)
+
+            log_ok("Activation credential validated")
+            log_ok("Registered hub found")
+            log_ok("Hub identity verified\n")
+
+            self.registration_data = data
+            hub_name = data.get("hub_name", "RNHub")
+            hub_id = data.get("hub_id", "hub-01")
+            res_id = data.get("resource_id", "N/A")
+            loc = data.get("installation_location", "Main Site")
+            tz = data.get("timezone", "Asia/Colombo")
+
+            print(f"{BOLD}Hub Name    : {hub_name}{RESET}")
+            print(f"{BOLD}Hub ID      : {hub_id}{RESET}")
+            print(f"{BOLD}Resource    : {res_id}{RESET}")
+            print(f"{BOLD}Location    : {loc}{RESET}")
+            print(f"{BOLD}Timezone    : {tz}{RESET}\n")
 
             self.config_vars["HUB_ID"] = hub_id
-            self.config_vars["RABBITMQ_HOST"] = rmq_host
-            self.config_vars["RABBITMQ_AMQP_PORT"] = rmq_port
-            self.config_vars["RABBITMQ_USER"] = rmq_user
-            self.config_vars["RABBITMQ_PASSWORD"] = rmq_pass
             self.config_vars["SCHEDULE_TIMEZONE"] = tz
+            if data.get("broker_credentials"):
+                bcreds = data["broker_credentials"]
+                if "host" in bcreds:
+                    self.config_vars["RABBITMQ_HOST"] = bcreds["host"]
+                if "port" in bcreds:
+                    self.config_vars["RABBITMQ_AMQP_PORT"] = str(bcreds["port"])
+                if "user" in bcreds:
+                    self.config_vars["RABBITMQ_USER"] = bcreds["user"]
+                if "password" in bcreds:
+                    self.config_vars["RABBITMQ_PASSWORD"] = bcreds["password"]
+                if "vhost" in bcreds:
+                    self.config_vars["RABBITMQ_VHOST"] = bcreds["vhost"]
 
-            print(f"\n {GREEN}[✓]{RESET} Configuration confirmed: Hub={hub_id} ({tz}) | Broker={rmq_host}:{rmq_port}")
+            log_ok("Configuration saved securely")
+            log_ok("Registration activated")
         except Exception as exc:
-            log_warn(f"Wizard encountered exception, using existing defaults: {exc}")
+            log_warn(f"Middleware activation failed: {exc}")
+            log_warn("Installation will continue in unregistered mode. You can activate later with 'iothubctl hub activate'.")
 
     def deploy_environment_file(self):
-        """Generates /etc/iothub/iothub.env from resolved configuration."""
+        """Generates /etc/iothub/iothub.env from resolved configuration without plaintext secrets."""
         log_step(f"Writing environment configuration at {self.env_path}")
         lines = [
             "# ==========================================\n",
@@ -528,7 +575,22 @@ class IoTInstaller:
             f"# File: {self.env_path}\n",
             "# ==========================================\n",
         ]
+        sensitive_keys = {
+            "RABBITMQ_PASSWORD",
+            "AUTH_TOKEN",
+            "API_TOKEN",
+            "JWT_SECRET",
+            "SECRET_KEY",
+        }
         for k, v in self.config_vars.items():
+            k_upper = k.upper()
+            if (
+                k_upper in sensitive_keys
+                or "PASSWORD" in k_upper
+                or "SECRET" in k_upper
+                or "TOKEN" in k_upper
+            ):
+                continue  # Avoid plaintext secret exposure in /etc/iothub/iothub.env
             lines.append(f"{k}={v}\n")
 
         if not self.dry_run:
@@ -536,7 +598,7 @@ class IoTInstaller:
                 f.writelines(lines)
             os.chmod(self.env_path, 0o640)
 
-        log_ok(f"Created {self.env_path} (mode 0640).")
+        log_ok(f"Created {self.env_path} (mode 0640, plaintext secrets omitted).")
 
         if not self.destdir and not self.dry_run:
             try:
@@ -548,13 +610,14 @@ class IoTInstaller:
 
     def sync_sqlite_configuration(self):
         """Initializes SQLite config tables and encrypts credentials with master key."""
-        log_step("Synchronizing encrypted credentials to SQLite")
+        log_step("Synchronizing encrypted credentials and registration to SQLite")
         if self.dry_run:
             log_ok("[DRY-RUN] Would encrypt secrets and sync to SQLite.")
             return
 
         db_file = self.var_dir / "iothub.db"
         try:
+            import json
             import sqlite3
             from datetime import datetime, timezone
 
@@ -588,14 +651,62 @@ class IoTInstaller:
                         changed_at TEXT NOT NULL
                     )
                 """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS hub_registration (
+                        hub_uuid TEXT PRIMARY KEY,
+                        hub_id TEXT NOT NULL,
+                        hub_name TEXT NOT NULL,
+                        hub_type TEXT DEFAULT 'mini_pc',
+                        status TEXT NOT NULL DEFAULT 'unregistered',
+                        resource_id INTEGER,
+                        sub_resource_id INTEGER,
+                        installation_location TEXT,
+                        timezone TEXT NOT NULL DEFAULT 'UTC',
+                        config_version INTEGER DEFAULT 0,
+                        lease_expires_at TEXT,
+                        verified_at TEXT NOT NULL,
+                        api_token TEXT,
+                        middleware_url TEXT,
+                        raw_config_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS authorized_devices (
+                        registration_device_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        device_mac TEXT,
+                        profile TEXT,
+                        status TEXT NOT NULL DEFAULT 'pending_binding',
+                        bound_port TEXT,
+                        updated_at TEXT NOT NULL
+                    )
+                """)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS device_bindings (
+                        device_mac TEXT PRIMARY KEY,
+                        device_name TEXT NOT NULL,
+                        port_hint TEXT,
+                        usb_vid TEXT,
+                        usb_pid TEXT,
+                        usb_serial TEXT,
+                        connection_mode TEXT DEFAULT 'auto',
+                        approved INTEGER DEFAULT 1,
+                        profile_id TEXT DEFAULT 'plant_controller_v1',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        registration_device_id TEXT
+                    )
+                """)
 
                 # 1. Plaintext settings
                 plain_settings = {
                     "hub.id": self.config_vars.get("HUB_ID", "hub-01"),
-                    "schedule.timezone": self.config_vars.get("SCHEDULE_TIMEZONE", "Asia/Kolkata"),
-                    "rabbitmq.host": self.config_vars.get("RABBITMQ_HOST", "47.236.59.210"),
+                    "schedule.timezone": self.config_vars.get("SCHEDULE_TIMEZONE", "Asia/Colombo"),
+                    "rabbitmq.host": self.config_vars.get("RABBITMQ_HOST", "localhost"),
                     "rabbitmq.port": self.config_vars.get("RABBITMQ_AMQP_PORT", "5672"),
-                    "rabbitmq.username": self.config_vars.get("RABBITMQ_USER", "rnr_iot_user"),
+                    "rabbitmq.username": self.config_vars.get("RABBITMQ_USER", ""),
+                    "middleware.url": self.config_vars.get("MIDDLEWARE_URL", self.middleware_url),
                 }
                 for k, v in plain_settings.items():
                     conn.execute("""
@@ -623,6 +734,90 @@ class IoTInstaller:
                             updated_at = excluded.updated_at
                     """, (enc_val, nonce, now))
 
+                # 3. Save Registration Snapshot if activated
+                if self.registration_data:
+                    reg = self.registration_data
+                    hub_uuid = reg.get("hub_uuid", "")
+                    hub_id = reg.get("hub_id", self.config_vars.get("HUB_ID", "hub-01"))
+                    hub_name = reg.get("hub_name", hub_id)
+                    hub_type = reg.get("hub_type", "mini_pc")
+                    status = reg.get("status", "active")
+                    res_id = reg.get("resource_id")
+                    sub_res_id = reg.get("sub_resource_id")
+                    loc = reg.get("installation_location", "")
+                    tz = reg.get("timezone", "Asia/Colombo")
+                    cfg_ver = int(reg.get("config_version", 1))
+                    lease = reg.get("lease_expires_at")
+                    api_token = reg.get("api_token")
+                    raw_json = json.dumps(reg)
+
+                    conn.execute("""
+                        INSERT INTO hub_registration (
+                            hub_uuid, hub_id, hub_name, hub_type, status,
+                            resource_id, sub_resource_id, installation_location,
+                            timezone, config_version, lease_expires_at, verified_at,
+                            api_token, middleware_url, raw_config_json, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(hub_uuid) DO UPDATE SET
+                            hub_id = excluded.hub_id,
+                            hub_name = excluded.hub_name,
+                            hub_type = excluded.hub_type,
+                            status = excluded.status,
+                            resource_id = excluded.resource_id,
+                            sub_resource_id = excluded.sub_resource_id,
+                            installation_location = excluded.installation_location,
+                            timezone = excluded.timezone,
+                            config_version = excluded.config_version,
+                            lease_expires_at = excluded.lease_expires_at,
+                            verified_at = excluded.verified_at,
+                            api_token = excluded.api_token,
+                            middleware_url = excluded.middleware_url,
+                            raw_config_json = excluded.raw_config_json,
+                            updated_at = excluded.updated_at
+                    """, (
+                        hub_uuid, hub_id, hub_name, hub_type, status,
+                        res_id, sub_res_id, loc, tz, cfg_ver, lease, now,
+                        api_token, self.middleware_url, raw_json, now
+                    ))
+
+                    # Encrypt API token if present
+                    if api_token:
+                        enc_tok, nonce_tok = crypto.encrypt_secret(
+                            plaintext=api_token,
+                            config_key="auth.token",
+                            key_version=1,
+                        )
+                        conn.execute("""
+                            INSERT INTO config_settings (config_key, storage_type, encrypted_value, nonce, key_version, updated_at)
+                            VALUES ('auth.token', 'ENCRYPTED', ?, ?, 1, ?)
+                            ON CONFLICT(config_key) DO UPDATE SET
+                                encrypted_value = excluded.encrypted_value,
+                                nonce = excluded.nonce,
+                                updated_at = excluded.updated_at
+                        """, (enc_tok, nonce_tok, now))
+
+                    # Save connected devices into authorized_devices
+                    devices = reg.get("connected_devices") or reg.get("authorized_devices") or []
+                    for d in devices:
+                        r_id = str(d.get("registration_device_id") or d.get("device_id") or "")
+                        if not r_id:
+                            continue
+                        d_name = str(d.get("name") or d.get("device_name") or r_id)
+                        d_mac = d.get("device_mac") or d.get("mac")
+                        d_prof = d.get("profile") or d.get("profile_id") or "plant_controller_v1"
+                        d_stat = d.get("status", "pending_binding")
+                        conn.execute("""
+                            INSERT INTO authorized_devices (
+                                registration_device_id, name, device_mac, profile, status, updated_at
+                            ) VALUES (?, ?, ?, ?, ?, ?)
+                            ON CONFLICT(registration_device_id) DO UPDATE SET
+                                name = excluded.name,
+                                device_mac = COALESCE(excluded.device_mac, authorized_devices.device_mac),
+                                profile = excluded.profile,
+                                status = excluded.status,
+                                updated_at = excluded.updated_at
+                        """, (r_id, d_name, d_mac, d_prof, d_stat, now))
+
             conn.close()
 
             # Set database permissions
@@ -635,7 +830,7 @@ class IoTInstaller:
                 except Exception:
                     pass
 
-            log_ok("RabbitMQ credentials encrypted with AES-256-GCM and stored in SQLite.")
+            log_ok("Configuration & credentials encrypted with AES-256-GCM and stored in SQLite.")
         except Exception as exc:
             log_warn(f"Could not synchronize SQLite credentials during install: {exc}")
 
@@ -905,6 +1100,21 @@ def parse_args():
         help="Assume yes to confirmation prompts without prompting interactively",
     )
     parser.add_argument(
+        "--activation-code",
+        default=None,
+        help="One-time activation credential issued by Django middleware",
+    )
+    parser.add_argument(
+        "--middleware-url",
+        default=None,
+        help="Django middleware base URL (default: https://api.example.com)",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Perform offline installation without registering with middleware",
+    )
+    parser.add_argument(
         "--cwd",
         default="",
         help="Caller current working directory (for loading existing .env)",
@@ -921,6 +1131,9 @@ def main():
         dry_run=args.dry_run,
         wizard=args.wizard,
         cwd=args.cwd,
+        activation_code=args.activation_code,
+        middleware_url=args.middleware_url,
+        offline=args.offline,
     )
     if args.uninstall:
         installer.uninstall(purge=args.purge, yes=args.yes)

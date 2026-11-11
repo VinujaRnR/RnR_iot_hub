@@ -13,9 +13,10 @@ class DeviceNotFoundError(Exception):
 class DeviceManager:
     """Manages registered devices and dispatches incoming actions."""
 
-    def __init__(self):
+    def __init__(self, registration_guard: Optional[Any] = None):
         self._devices: Dict[str, Any] = {}
         self._aliases: Dict[str, str] = {}
+        self.registration_guard = registration_guard
 
     def register_device(self, device_or_id: Any, device: Optional[Any] = None) -> None:
         if device is not None:
@@ -65,8 +66,16 @@ class DeviceManager:
         """
         Dispatches an action to the target device.
         Raises DeviceNotFoundError if device_id is not known.
-        Raises DeviceActionError if action is invalid.
+        Raises DeviceActionError if action is invalid or device is unauthorized.
         """
+        if self.registration_guard:
+            authorized, reason = await self.registration_guard.check_hub_authorized()
+            if not authorized:
+                raise DeviceActionError(f"Hub unauthorized for hardware actuation: {reason}")
+            approved = await self.registration_guard.is_device_approved(device_id)
+            if not approved:
+                raise DeviceActionError(f"Device '{device_id}' is not authorized by Django middleware inventory.")
+
         device = self.get_device(device_id)
         if not device:
             raise DeviceNotFoundError(

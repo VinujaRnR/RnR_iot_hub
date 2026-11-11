@@ -75,6 +75,7 @@ class RabbitMQConsumer:
         publisher: Optional[RabbitMQPublisher] = None,
         schedule_engine: Optional[Any] = None,
         enable_schedule_accepted_event: Optional[bool] = None,
+        registration_guard: Optional[Any] = None,
     ):
         self.url = url
         self.queue_name = queue_name
@@ -89,6 +90,7 @@ class RabbitMQConsumer:
         self.schedule_repo = schedule_repo or (ScheduleRepository(db) if db else None)
         self.publisher = publisher
         self.schedule_engine = schedule_engine
+        self.registration_guard = registration_guard
 
         if enable_schedule_accepted_event is None:
             from config import ENABLE_SCHEDULE_ACCEPTED_EVENT
@@ -253,6 +255,15 @@ class RabbitMQConsumer:
             # Reject without requeue -> routed to dead-letter exchange
             await self._safe_reject(message, requeue=False)
             return
+
+        if self.registration_guard:
+            authorized, reason = await self.registration_guard.check_hub_authorized()
+            if not authorized:
+                logger.warning("[GUARD] Inbound RabbitMQ message rejected: %s", reason)
+                if self.db:
+                    await self.db.record_alert("WARNING", "consumer", f"Inbound message rejected: {reason}", {})
+                await self._safe_reject(message, requeue=False)
+                return
 
         rk = getattr(message, "routing_key", "")
         # Check if message is a direct command or command batch

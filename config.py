@@ -69,9 +69,14 @@ class Settings(BaseSettings):
     )
 
     # ==========================================
-    # Hub Identification & Prefetch
+    # Hub Identification & Middleware Integration
     # ==========================================
-    HUB_ID: str = Field(default="hub-01", description="Unique hub identifier")
+    HUB_ID: str = Field(default="hub-01", description="Unique registered hub identifier")
+    HUB_UUID: Optional[str] = Field(default=None, description="Authoritative Django UUID for registered hub")
+    MIDDLEWARE_URL: str = Field(default="https://api.example.com", description="Base URL of Django middleware")
+    MIDDLEWARE_VERIFY_SSL: bool = Field(default=True, description="Verify SSL certificates for middleware")
+    MIDDLEWARE_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0, description="HTTP timeout for middleware requests")
+    OFFLINE_LEASE_GRACE_HOURS: int = Field(default=72, ge=1, description="Offline operating lease period in hours")
     RABBITMQ_PREFETCH: int = Field(default=10, ge=1, le=1000, description="RabbitMQ prefetch count")
 
     # ==========================================
@@ -217,3 +222,8 @@ DEADLETTER_EXCHANGE = settings.RABBITMQ_DEADLETTER_EXCHANGE
 SCHEDULE_ACCEPTED_KEY = f"hub.{HUB_ID}.schedule.accepted"
 ACTION_RESULT_KEY = f"hub.{HUB_ID}.action.result"
 ENABLE_SCHEDULE_ACCEPTED_EVENT = settings.ENABLE_SCHEDULE_ACCEPTED_EVENT
+HUB_UUID = settings.HUB_UUID
+MIDDLEWARE_URL = settings.MIDDLEWARE_URL
+MIDDLEWARE_VERIFY_SSL = settings.MIDDLEWARE_VERIFY_SSL
+MIDDLEWARE_TIMEOUT_SECONDS = settings.MIDDLEWARE_TIMEOUT_SECONDS
+OFFLINE_LEASE_GRACE_HOURS = settings.OFFLINE_LEASE_GRACE_HOURS
